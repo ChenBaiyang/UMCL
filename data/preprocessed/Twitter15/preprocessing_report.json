@@ -1,0 +1,52 @@
+{
+  "dataset_id": "Twitter15",
+  "event_count": 1490,
+  "platform_count": {
+    "twitter": 1490
+  },
+  "view_availability_count": {
+    "content": 1490,
+    "stance": 1490,
+    "propagation": 1490,
+    "evidence": 0,
+    "source": 1490
+  },
+  "placeholder_node_count": 0,
+  "text_unobserved_node_count": 342364,
+  "boilerplate_node_count": 0,
+  "relative_delay_only_node_count": 343854,
+  "source_only_evidence_count": 0,
+  "missing_timestamp_count": 0,
+  "missing_source_metadata_count": 10430,
+  "pre_validation_warning_count": 0,
+  "pre_validation_error_count": 0,
+  "validation_warnings": [],
+  "validation_errors": [],
+  "split_counts": {
+    "val": 224,
+    "train": 1043,
+    "test": 223
+  },
+  "split_seed": 2,
+  "split_manifest_path": "data/downloads/Twitter15_split_manifest_seed_2.csv",
+  "id_map_path": "data/preprocessed/Twitter15/id_maps.json",
+  "id_map_mode": "summary",
+  "mode": "full",
+  "resolved_pipeline_config": {
+    "dataset_id": "Twitter15",
+    "mode": "full",
+    "optional_log_time_from_source": false,
+    "split_seed": 2,
+    "resolved_overrides": {
+      "optional_log_time_from_source": false,
+      "split_seed": 2
+    }
+  },
+  "output": "data/preprocessed/Twitter15/preprocessed_events.pkl.gz",
+  "output_format": "pickle+gzip",
+  "timing": {
+    "raw_open_sec": 13.658899223431945,
+    "build_preprocess_sec": 52.77343878429383,
+    "total_sec": 67.5493301646784
+  }
+}

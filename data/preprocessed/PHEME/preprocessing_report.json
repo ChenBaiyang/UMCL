@@ -1,0 +1,52 @@
+{
+  "dataset_id": "PHEME",
+  "event_count": 6425,
+  "platform_count": {
+    "twitter": 6425
+  },
+  "view_availability_count": {
+    "content": 6425,
+    "stance": 5748,
+    "propagation": 6425,
+    "evidence": 4209,
+    "source": 6425
+  },
+  "placeholder_node_count": 0,
+  "text_unobserved_node_count": 0,
+  "boilerplate_node_count": 0,
+  "relative_delay_only_node_count": 0,
+  "source_only_evidence_count": 4209,
+  "missing_timestamp_count": 0,
+  "missing_source_metadata_count": 69,
+  "pre_validation_warning_count": 0,
+  "pre_validation_error_count": 0,
+  "validation_warnings": [],
+  "validation_errors": [],
+  "split_counts": {
+    "train": 4497,
+    "val": 964,
+    "test": 964
+  },
+  "split_seed": 2,
+  "split_manifest_path": "data/downloads/PHEME_split_manifest_seed_2.csv",
+  "id_map_path": "data/preprocessed/PHEME/id_maps.json",
+  "id_map_mode": "summary",
+  "mode": "full",
+  "resolved_pipeline_config": {
+    "dataset_id": "PHEME",
+    "mode": "full",
+    "optional_log_time_from_source": false,
+    "split_seed": 2,
+    "resolved_overrides": {
+      "optional_log_time_from_source": false,
+      "split_seed": 2
+    }
+  },
+  "output": "data/preprocessed/PHEME/preprocessed_events.pkl.gz",
+  "output_format": "pickle+gzip",
+  "timing": {
+    "raw_open_sec": 16.455879374407232,
+    "build_preprocess_sec": 13.731176146306098,
+    "total_sec": 30.79732392448932
+  }
+}

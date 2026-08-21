@@ -1,0 +1,269 @@
+{
+  "meta": {
+    "schema_version": 4,
+    "config_version": "2026-05-24",
+    "mode": "full"
+  },
+  "stages": {
+    "event_pipeline": {
+      "defaults": {
+        "optional_log_time_from_source": false,
+        "split_seed": 2
+      },
+      "dataset_overrides": {}
+    },
+    "encoders": {
+      "content": {
+        "defaults": {
+          "text_source_policy": "placeholderized_norm_light",
+          "replace_urls": true,
+          "replace_mentions": true,
+          "preserve_hashtags": true,
+          "preserve_emojis": true,
+          "model_name_value": "xlm-roberta-base",
+          "max_length_value": 64,
+          "content_sentence_pool_mode": "masked_mean_pooling",
+          "freeze_embeddings": true,
+          "tuning_strategy": "train_top_k_layers",
+          "train_top_k_layers": 4,
+          "build_surface_features": true,
+          "enable_surface_fusion": true,
+          "surface_feature_names": [
+            "has_url",
+            "has_media",
+            "char_len",
+            "token_len_approx",
+            "mention_count",
+            "hashtag_count",
+            "emoji_count",
+            "exclamation_count",
+            "question_count"
+          ],
+          "surface_feature_hidden_dim": 64,
+          "event_hidden_dim": 512,
+          "dropout": 0.1,
+          "storage_backend": "npz_compressed",
+          "shard_size": 2048
+        },
+        "dataset_overrides": {
+          "Weibo": {
+            "max_length_value": 128
+          },
+          "RumourEval": {
+            "train_top_k_layers": 2
+          }
+        }
+      },
+      "stance": {
+        "defaults": {
+          "model_name_value": "xlm-roberta-base",
+          "max_length_value": 64,
+          "encode_batch_size": 64,
+          "max_replies_per_event": 256,
+          "reply_embedding_dim": 768,
+          "reply_embedding_proj_dim_value": 512,
+          "context_cat_fields": [
+            "depth_bucket_id",
+            "time_bucket_id",
+            "parent_is_source",
+            "interaction_type_id"
+          ],
+          "context_hidden_dim_value": 32,
+          "context_dense_fields": [
+            "log1p_time_from_source_min",
+            "char_len_log1p",
+            "token_len_approx_log1p",
+            "reply_source_cosine",
+            "reply_parent_cosine",
+            "parent_source_cosine",
+            "source_overlap_ratio",
+            "parent_overlap_ratio",
+            "has_parent_text",
+            "has_url",
+            "has_mention",
+            "has_hashtag",
+            "emoji_count_clipped",
+            "question_count_clipped",
+            "exclamation_count_clipped",
+            "is_short_reply",
+            "is_very_short_reply"
+          ],
+          "dense_hidden_dim_value": 32,
+          "reply_mlp_hidden_dim_value": 512,
+          "reply_hidden_dim_value": 512,
+          "summarizer_hidden_dim_value": 512,
+          "event_hidden_dim": 512,
+          "stance_label_names": [
+            "support",
+            "deny",
+            "query",
+            "comment"
+          ],
+          "enable_reply_classifier_head": false,
+          "dropout": 0.1,
+          "shard_size": 4096
+        },
+        "dataset_overrides": {
+          "Weibo": {
+            "max_length_value": 128,
+            "max_replies_per_event": 320
+          },
+          "RumourEval":{
+            "enable_reply_classifier_head": true
+          }
+        }
+      },
+      "propagation": {
+        "defaults": {
+          "max_nodes_per_event": 512,
+          "categorical_feature_embedding_dim": 16,
+          "continuous_feature_hidden_dim": 32,
+          "structure_feature_hidden_dim": 64,
+          "node_hidden_dim": 256,
+          "transformer_layer_count": 2,
+          "attention_head_count": 4,
+          "transformer_ffn_hidden_dim": 768,
+          "dropout": 0.1,
+          "event_hidden_dim": 512,
+          "aux_node_head_enabled": false,
+          "shard_size": 32768,
+          "enable_order_bucket": true,
+          "early_fraction": 0.333333,
+          "middle_fraction": 0.333333,
+          "middle_sampling_pool_multiplier": 2.0,
+          "event_shape_features_enabled": true,
+          "temporal_profile_enabled": true,
+          "temporal_profile_policy": "multi_resolution",
+          "event_summary_fusion_enabled": true,
+          "pooling_policy": "root_mean_max_stage",
+          "stage_pooling_enabled": true,
+          "clean_redundant_continuous_features": true,
+          "local_structure_features_policy": "balanced",
+          "parent_bias_attention_enabled": true,
+          "parent_bias_relation_policy": "parent_source"
+        },
+        "dataset_overrides": {
+          "RumourEval": {
+            "max_nodes_per_event": 64
+          },
+          "PHEME": {
+            "max_nodes_per_event": 64
+          }
+        }
+      },
+      "evidence": {
+        "defaults": {
+          "domain_bucket_policy": "hybrid",
+          "storage_backend": "npz",
+          "shard_size": 4096,
+          "set_pooling": "masked_mean",
+          "reference_attention_pooling_hidden_dim": 48,
+          "summary_mlp_hidden_dim": 64,
+          "summary_branch_hidden_dim": 64,
+          "reference_category_embedding_dim": 8,
+          "reference_mlp_hidden_dim": 96,
+          "reference_branch_hidden_dim": 96,
+          "summary_reference_fusion_hidden_dim": 128,
+          "event_hidden_dim": 128,
+          "dropout": 0.2
+        },
+        "dataset_overrides": {}
+      },
+      "source": {
+        "defaults": {
+          "use_profile_text_cues": true,
+          "use_verified_reason": false,
+          "use_verified_type": false,
+          "use_account_age_days": true,
+          "use_lifetime_posting_rate_proxy": false,
+          "build_second_temporal_pass": false,
+          "storage_backend": "npz",
+          "shard_size": 4096,
+          "summary_mlp_hidden_dim": 128,
+          "summary_branch_hidden_dim": 128,
+          "categorical_feature_embedding_dim": 8,
+          "categorical_mlp_hidden_dim": 32,
+          "categorical_branch_hidden_dim": 32,
+          "summary_categorical_fusion_hidden_dim": 128,
+          "event_hidden_dim": 128,
+          "dropout": 0.2
+        },
+        "dataset_overrides": {}
+      }
+    },
+    "fusion": {
+      "defaults": {
+        "posterior_latent_dim": 512,
+        "posterior_logvar_clip_min": -6.0,
+        "posterior_logvar_clip_max": 6.0,
+        "sample_latent_during_training": null,
+        "use_unit_prior_expert": true,
+        "fusion_head_hidden_dim": 256,
+        "fusion_head_dropout": 0.15,
+        "view_reconstruction_loss_weight": 0.01,
+        "primary_task_loss_weight": 1.0,
+        "stance_auxiliary_loss_weight": 0,
+        "posterior_kl_loss_weight": 1e-05,
+        "views": [
+          "content",
+          "stance",
+          "propagation",
+          "evidence",
+          "source"
+        ],
+        "active_views": "content,propagation,stance",
+        "batch_size": 64,
+        "max_auto_workers": 4,
+        "max_open_shards": 16,
+        "last_checkpoint_interval": 1,
+        "early_stop_patience": 6,
+        "max_epoch": 30,
+        "candidate_epochs": 10,
+        "monitor_name": "macro_f1",
+        "optimizer": {
+          "backbone": {
+            "lr": 2e-05,
+            "weight_decay": 0.01
+          },
+          "top_layer": {
+            "lr": 5e-05,
+            "weight_decay": 0.01
+          },
+          "head": {
+            "lr": 0.0001,
+            "weight_decay": 0.0001
+          },
+          "scheduler": {
+            "factor": 0.5,
+            "patience": 2,
+            "min_lr": 1e-06,
+            "start_epoch": 5
+          }
+        }
+      },
+      "dataset_overrides": {
+        "RumourEval": {
+          "batch_size": 16,
+          "max_epoch": 20,
+          "stance_auxiliary_loss_weight": 1
+        },
+        "Weibo": {
+          "max_epoch": 20
+        },
+        "Twitter16": {
+          "batch_size": 32,
+          "early_stop_patience": 10,
+          "active_views": "content,propagation"
+        },
+        "Twitter15": {
+          "batch_size": 32,
+          "early_stop_patience": 10,
+          "active_views": "content,propagation"
+        },
+        "PHEME": {
+          "batch_size": 80
+        }
+      }
+    }
+  }
+}

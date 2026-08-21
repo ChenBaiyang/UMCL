@@ -1,13 +1,6 @@
 # UMCL
 
-Research code for **Unified Multi-view Credibility Learning (UMCL)**. UMCL models
-online credibility from complementary content, stance, propagation, evidence,
-and source views. View-specific representations are combined through a
-Product-of-Experts fusion module for event-level classification. 
-
-We formulate social media misinformation detection as a multi-view credibility learning problem. UMCL represents heterogeneous event-level views as probabilistic evidence of a shared latent credibility construct and employs subset-conditioned Product-of-Experts fusion to integrate whichever views are available. This design provides a common inference interface for incomplete and varying view configurations without explicit view imputation or subset-specific fusion architectures.
-
-![w:400px](docs/UMCL_overview.jpg)
+Research code for **Unified Multi-view Credibility Learning (UMCL)**. UMCL models online credibility from complementary content, stance, propagation, evidence, and source views. View-specific representations are combined through a Product-of-Experts fusion module for event-level classification. 
 
 
 ## Supported datasets

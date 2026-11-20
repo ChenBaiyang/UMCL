@@ -1,14 +1,16 @@
 from __future__ import annotations
 
+from utils.runtime import move_batch_to_device as _move_batch_to_device, autocast_context as _autocast_context
+from utils.runtime import all_losses_finite as _all_losses_finite
+
 import csv
 import json
 import os
 import random
-from contextlib import nullcontext
 from dataclasses import asdict, dataclass, field
 from functools import partial
 from pathlib import Path
-from typing import Any, Callable, Iterable, Sequence, TYPE_CHECKING
+from typing import Any, Callable, Iterable, TYPE_CHECKING
 
 import torch
 from torch.utils.data import DataLoader, Dataset, Sampler, Subset
@@ -29,6 +31,11 @@ if TYPE_CHECKING:
 
 
 LOGGER = get_logger("fusion_training")
+
+BEST_SELECTION_SCOPE_ALL_EPOCHS = "all_evaluated_epochs"
+BEST_SELECTION_SCOPE_CANDIDATE_EPOCHS = "candidate_epochs"
+BEST_SELECTION_RULE_MIN_DELTA = "monitor_improvement_exceeds_min_delta"
+BEST_SELECTION_RULE_RAW_MAX = "raw_monitor_max_earliest_tie"
 
 
 @dataclass
@@ -401,26 +408,8 @@ def build_eval_loader(
     return loader, len(subset), selected_splits, dataset.feature_dims, loader_kwargs, dataset.primary_task_spec
 
 
-def _move_batch_to_device(batch, device: torch.device, *, non_blocking: bool = False) -> None:
-    for modality_payload in batch.modalities.values():
-        for key, value in modality_payload.items():
-            if isinstance(value, torch.Tensor):
-                modality_payload[key] = value.to(device, non_blocking=non_blocking)
-    for key, value in batch.modality_mask.items():
-        batch.modality_mask[key] = value.to(device, non_blocking=non_blocking)
-    for key, value in batch.task_labels.items():
-        batch.task_labels[key] = value.to(device, non_blocking=non_blocking)
-    for key, value in batch.task_mask.items():
-        batch.task_mask[key] = value.to(device, non_blocking=non_blocking)
 
 
-def _autocast_context(device: torch.device, use_amp: bool):
-    if not use_amp:
-        return nullcontext()
-    if device.type == "cuda":
-        amp_dtype = torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16
-        return torch.autocast(device_type="cuda", dtype=amp_dtype)
-    return nullcontext()
 
 
 def _build_grad_scaler(device: torch.device, use_amp: bool):
@@ -440,13 +429,6 @@ def _loss_snapshot(losses: dict[str, torch.Tensor]) -> dict[str, float]:
     return snapshot
 
 
-def _all_losses_finite(losses: dict[str, torch.Tensor]) -> bool:
-    for key, value in losses.items():
-        if key.startswith("_"):
-            continue
-        if not torch.isfinite(value).all():
-            return False
-    return True
 
 
 def _empty_loss_totals() -> dict[str, float]:
@@ -665,6 +647,10 @@ def run_training(
     enable_early_stop: bool = True,
     train_subset_masker: "DeterministicMixedSubsetMasker | None" = None,
     eval_subset_masker: "DeterministicMixedSubsetMasker | None" = None,
+    best_selection_start_epoch: int = 1,
+    best_selection_min_delta: float | None = None,
+    best_selection_scope: str = BEST_SELECTION_SCOPE_ALL_EPOCHS,
+    best_selection_rule: str | None = None,
 ) -> dict[str, Any]:
     epoch_records: list[EpochRecord] = []
     global_step = 0
@@ -681,8 +667,32 @@ def run_training(
     amp_enabled = bool(use_amp and device.type == "cuda")
     pending_log_records: list[TrainStepRecord] = []
 
-    if early_stop_patience < 1:
+    selection_start_epoch = int(best_selection_start_epoch)
+    selection_min_delta = (
+        float(early_stop_min_delta)
+        if best_selection_min_delta is None
+        else float(best_selection_min_delta)
+    )
+    selection_scope = str(best_selection_scope).strip()
+    selection_rule = (
+        BEST_SELECTION_RULE_MIN_DELTA
+        if best_selection_rule is None
+        else str(best_selection_rule).strip()
+    )
+
+    if enable_early_stop and early_stop_patience < 1:
         raise ValueError("early_stop_patience must be at least 1.")
+    if selection_start_epoch < 1 or selection_start_epoch > int(max_epoch):
+        raise ValueError(
+            "best_selection_start_epoch must be within the configured epoch range; "
+            f"got {selection_start_epoch} for max_epoch={max_epoch}."
+        )
+    if selection_min_delta < 0.0:
+        raise ValueError("best_selection_min_delta must be non-negative.")
+    if selection_rule == BEST_SELECTION_RULE_RAW_MAX and selection_min_delta != 0.0:
+        raise ValueError(
+            "raw monitor maximum selection requires best_selection_min_delta=0.0."
+        )
 
     if log_path is not None:
         log_path.parent.mkdir(parents=True, exist_ok=True)
@@ -871,22 +881,29 @@ def run_training(
             scheduler_active = epoch >= int(config.optimizer["scheduler"]["start_epoch"])
             if scheduler is not None and scheduler_active:
                 scheduler.step(monitor_value)
-            improvement = best_monitor_value is None or (monitor_value - best_monitor_value) > early_stop_min_delta
-            if improvement:
-                best_monitor_value = monitor_value
-                best_epoch = epoch
-                early_stop_counter = 0
-                is_best = True
-            elif scheduler_active:
-                early_stop_counter += 1
+            selection_active = epoch >= selection_start_epoch
+            if selection_active:
+                improvement = (
+                    best_monitor_value is None
+                    or (monitor_value - best_monitor_value) > selection_min_delta
+                )
+                if improvement:
+                    best_monitor_value = monitor_value
+                    best_epoch = epoch
+                    early_stop_counter = 0
+                    is_best = True
+                elif scheduler_active:
+                    early_stop_counter += 1
             LOGGER.info(
-                "completed evaluation for epoch %s monitor=%s value=%.6f best=%.6f best_epoch=%s scheduler_active=%s",
+                "completed evaluation for epoch %s monitor=%s value=%.6f best=%.6f "
+                "best_epoch=%s scheduler_active=%s selection_active=%s",
                 epoch,
                 monitor_name,
                 monitor_value,
                 float(best_monitor_value) if best_monitor_value is not None else float("nan"),
                 best_epoch,
                 scheduler_active,
+                selection_active,
             )
         optimizer_group_lrs = _optimizer_group_lrs(optimizer)
         if "head" not in optimizer_group_lrs:
@@ -928,6 +945,11 @@ def run_training(
             "optimizer_group_lrs": optimizer_group_lrs,
             "mode": config.mode,
             "active_views": (["content", "stance", "propagation", "evidence", "source"] if view_mask is None else view_mask.get_active_views()),
+            "selection_scope": selection_scope,
+            "selection_rule": selection_rule,
+            "candidate_epoch_start": selection_start_epoch,
+            "candidate_epoch_end": int(max_epoch),
+            "best_selection_min_delta": selection_min_delta,
         }
         checkpoint_path: Path | None = None
         if checkpoint_dir is not None and save_best_checkpoint and should_eval and is_best:
@@ -946,6 +968,7 @@ def run_training(
             on_new_best(
                 {
                     "epoch": epoch,
+                    "step": global_step,
                     "model": model,
                     "eval_summary": eval_summary,
                     "epoch_record": epoch_record,
@@ -960,6 +983,7 @@ def run_training(
             on_epoch_end(
                 {
                     "epoch": epoch,
+                    "step": global_step,
                     "model": model,
                     "epoch_record": epoch_record,
                     "eval_summary": eval_summary if should_eval else None,
@@ -988,6 +1012,11 @@ def run_training(
         "monitor_name": monitor_name,
         "best_epoch": best_epoch,
         "best_monitor_value": best_monitor_value,
+        "selection_scope": selection_scope,
+        "selection_rule": selection_rule,
+        "candidate_epoch_start": selection_start_epoch,
+        "candidate_epoch_end": int(max_epoch),
+        "best_selection_min_delta": selection_min_delta,
         "stopped_early": stopped_early,
         "stop_reason": stop_reason,
         "best_checkpoint": (str(checkpoint_dir / "checkpoint_best.pt") if checkpoint_dir is not None and save_best_checkpoint else None),

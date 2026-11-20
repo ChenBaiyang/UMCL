@@ -35,9 +35,25 @@
   "resolved_pipeline_config": {
     "dataset_id": "PHEME",
     "mode": "full",
+    "five_view_interface": true,
+    "evidence_scope": "source_only",
+    "keep_unlabeled_replies": true,
+    "keep_placeholders": true,
+    "source_scope": "source_author_only",
+    "keep_raw_and_light_norm_text": true,
+    "source_numeric_log_transform": false,
+    "build_experiment_split_manifest": false,
     "optional_log_time_from_source": false,
     "split_seed": 2,
     "resolved_overrides": {
+      "five_view_interface": true,
+      "evidence_scope": "source_only",
+      "keep_unlabeled_replies": true,
+      "keep_placeholders": true,
+      "source_scope": "source_author_only",
+      "keep_raw_and_light_norm_text": true,
+      "source_numeric_log_transform": false,
+      "build_experiment_split_manifest": false,
       "optional_log_time_from_source": false,
       "split_seed": 2
     }
@@ -45,8 +61,8 @@
   "output": "data/preprocessed/PHEME/preprocessed_events.pkl.gz",
   "output_format": "pickle+gzip",
   "timing": {
-    "raw_open_sec": 16.455879374407232,
-    "build_preprocess_sec": 13.731176146306098,
-    "total_sec": 30.79732392448932
+    "raw_open_sec": 16.37182210292667,
+    "build_preprocess_sec": 13.899289700202644,
+    "total_sec": 30.705782933160663
   }
 }

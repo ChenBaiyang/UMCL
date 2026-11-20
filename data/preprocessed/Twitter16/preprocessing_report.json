@@ -35,9 +35,25 @@
   "resolved_pipeline_config": {
     "dataset_id": "Twitter16",
     "mode": "full",
+    "five_view_interface": true,
+    "evidence_scope": "source_only",
+    "keep_unlabeled_replies": true,
+    "keep_placeholders": true,
+    "source_scope": "source_author_only",
+    "keep_raw_and_light_norm_text": true,
+    "source_numeric_log_transform": false,
+    "build_experiment_split_manifest": false,
     "optional_log_time_from_source": false,
     "split_seed": 2,
     "resolved_overrides": {
+      "five_view_interface": true,
+      "evidence_scope": "source_only",
+      "keep_unlabeled_replies": true,
+      "keep_placeholders": true,
+      "source_scope": "source_author_only",
+      "keep_raw_and_light_norm_text": true,
+      "source_numeric_log_transform": false,
+      "build_experiment_split_manifest": false,
       "optional_log_time_from_source": false,
       "split_seed": 2
     }
@@ -45,8 +61,8 @@
   "output": "data/preprocessed/Twitter16/preprocessed_events.pkl.gz",
   "output_format": "pickle+gzip",
   "timing": {
-    "raw_open_sec": 10.01173104532063,
-    "build_preprocess_sec": 35.99143508821726,
-    "total_sec": 46.679708358831704
+    "raw_open_sec": 7.119219674728811,
+    "build_preprocess_sec": 29.51971767563373,
+    "total_sec": 37.181885733269155
   }
 }

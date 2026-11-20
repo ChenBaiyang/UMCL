@@ -39,8 +39,7 @@ def _map_interaction_type(value: str | None) -> str:
 def _is_placeholder(dataset_id: str, post: dict[str, Any]) -> bool:
     if post.get("text_status") == "placeholder":
         return True
-    extra = post.get("extra", {})
-    return dataset_id == "RumourEval" and (extra.get("kind") == "more" or extra.get("reddit_kind") == "more")
+    return False
 
 
 def _map_text_status(dataset_id: str, post: dict[str, Any]) -> str:

@@ -1,9 +1,15 @@
 from __future__ import annotations
 
+from functools import partial
+from utils.runtime import (
+    resolve_optimizer_config, scheduler_params as _scheduler_params,
+    now_iso as _now_iso, now_dirstamp as _now_dirstamp,
+)
+_resolved_optimizer_config = partial(resolve_optimizer_config, None)
+
 import argparse
 import json
 import time
-from datetime import datetime
 from pathlib import Path
 from typing import Any, Sequence
 
@@ -17,7 +23,7 @@ from config.resolver import (
 )
 from models.artifacts import EnsureArtifactsOptions, ensure_model_inputs
 from models.evaluation import run_test
-from models.fusion.config import apply_optimizer_config, apply_sample_latent_default, normalize_optimizer_config
+from models.fusion.config import apply_optimizer_config, apply_sample_latent_default
 from models.fusion.hierarchical_optimizer import build_hierarchical_optimizer
 from models.fusion.model import UMCLFiveViewModel
 from models.fusion.training import build_eval_loader, build_train_loader, run_training
@@ -35,7 +41,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Run the standard UMCL train-validation-test pipeline.",
     )
-    parser.add_argument("--dataset_id", required=True, help="Single dataset id, e.g. RumourEval.")
+    parser.add_argument("--dataset_id", required=True, help="Single dataset id, e.g. PHEME.")
     parser.add_argument(
         "--pretrained_model",
         default=None,
@@ -65,37 +71,12 @@ def resolve_device(choice: str) -> torch.device:
     return torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 
 
-def _now_iso() -> str:
-    return datetime.now().astimezone().isoformat(timespec="seconds")
 
 
-def _now_dirstamp() -> str:
-    return datetime.now().strftime("%Y%m%d_%H%M%S_%f")
 
 
-def _resolved_optimizer_config(config) -> dict[str, Any]:
-    optimizer_config = normalize_optimizer_config(config.optimizer)
-    missing: list[str] = []
-    for group_name in ("backbone", "top_layer", "head"):
-        for field_name in ("lr", "weight_decay"):
-            if optimizer_config[group_name][field_name] is None:
-                missing.append(f"optimizer.{group_name}.{field_name}")
-    for field_name in ("factor", "patience", "min_lr", "start_epoch"):
-        if optimizer_config["scheduler"][field_name] is None:
-            missing.append(f"optimizer.scheduler.{field_name}")
-    if missing:
-        raise ValueError(f"Missing standard pipeline config values: {missing}")
-    return optimizer_config
 
 
-def _scheduler_params(optimizer_config: dict[str, Any]) -> dict[str, Any]:
-    scheduler_config = optimizer_config["scheduler"]
-    return {
-        "mode": "max",
-        "factor": float(scheduler_config["factor"]),
-        "patience": int(scheduler_config["patience"]),
-        "min_lr": float(scheduler_config["min_lr"]),
-    }
 
 
 def _run_config(
@@ -192,8 +173,6 @@ def run_pipeline(args: argparse.Namespace) -> dict[str, Any]:
 
 def _run_pipeline(args: argparse.Namespace) -> dict[str, Any]:
     dataset_id = str(args.dataset_id).strip()
-    if not dataset_id:
-        raise ValueError("dataset_id must not be empty.")
 
     mode = "full"
     seed = int(args.seed)
@@ -313,11 +292,7 @@ def _run_pipeline(args: argparse.Namespace) -> dict[str, Any]:
     )
 
     checkpoint_value = training_result.get("best_checkpoint")
-    if not checkpoint_value:
-        raise RuntimeError("Training did not report a best checkpoint.")
     checkpoint_path = Path(checkpoint_value)
-    if not checkpoint_path.is_file():
-        raise RuntimeError(f"Best checkpoint was not created: {checkpoint_path}")
 
     test_summary = run_test(
         dataset_id=dataset_id,

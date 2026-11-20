@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+from utils.runtime import move_batch_to_device as _move_batch_to_device, autocast_context as _autocast_context
+from utils.runtime import all_losses_finite as _all_losses_finite
+
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Iterable, TYPE_CHECKING
 import json
-from contextlib import nullcontext
 
 import torch
 from torch.utils.data import DataLoader
@@ -44,35 +46,10 @@ def write_eval_log(path: Path, records: Iterable[EvalBatchRecord]) -> None:
             handle.write("\n")
 
 
-def _move_batch_to_device(batch, device: torch.device, *, non_blocking: bool = False) -> None:
-    for modality_payload in batch.modalities.values():
-        for key, value in modality_payload.items():
-            if isinstance(value, torch.Tensor):
-                modality_payload[key] = value.to(device, non_blocking=non_blocking)
-    for key, value in batch.modality_mask.items():
-        batch.modality_mask[key] = value.to(device, non_blocking=non_blocking)
-    for key, value in batch.task_labels.items():
-        batch.task_labels[key] = value.to(device, non_blocking=non_blocking)
-    for key, value in batch.task_mask.items():
-        batch.task_mask[key] = value.to(device, non_blocking=non_blocking)
 
 
-def _autocast_context(device: torch.device, use_amp: bool):
-    if not use_amp:
-        return nullcontext()
-    if device.type == "cuda":
-        amp_dtype = torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16
-        return torch.autocast(device_type="cuda", dtype=amp_dtype)
-    return nullcontext()
 
 
-def _all_losses_finite(losses: dict[str, torch.Tensor]) -> bool:
-    for key, value in losses.items():
-        if key.startswith("_"):
-            continue
-        if not torch.isfinite(value).all():
-            return False
-    return True
 
 
 def _masked_classification_stats(

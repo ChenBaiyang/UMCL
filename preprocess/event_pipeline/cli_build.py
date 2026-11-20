@@ -34,8 +34,6 @@ LOGGER = get_logger("event_pipeline_build")
 GZIP_COMPRESSLEVEL = 1
 PROGRESS_LOG_EVERY = 250
 RATIO_SPLITS = ("train", "val", "test")
-RUMOUREVAL_SPLITS = ("train", "val", "test")
-RUMOUREVAL_TRAIN_COUNTS = {"train": 312, "val": 53}
 GENERIC_SPLIT_RATIOS = {"train": 70, "val": 15, "test": 15}
 
 
@@ -131,48 +129,36 @@ def _build_split_label_map(dataset_id: str, annotation_rows: list[dict[str, obje
 
 
 def _split_label_name(dataset_id: str, event_row: dict[str, object], label_map: dict[str, str]) -> str:
-    event_id = str(event_row.get("event_id"))
+    event_id = str(event_row.get('event_id'))
     label = label_map.get(event_id)
     if label is not None:
         return label.strip().lower()
-    task_targets = event_row.get("task_targets") or {}
+    task_targets = event_row.get('task_targets') or {}
     preferred_tasks = [_split_task_name(dataset_id)]
-    if dataset_id == "RumourEval":
-        preferred_tasks.append("rumour_status")
-    elif dataset_id == "Weibo":
-        preferred_tasks.append("veracity")
+    if dataset_id == 'Weibo':
+        preferred_tasks.append('veracity')
     for task_name in preferred_tasks:
         target = task_targets.get(task_name) if isinstance(task_targets, dict) else None
         if isinstance(target, dict):
-            label = target.get("label")
+            label = target.get('label')
             if label is not None:
                 return str(label).strip().lower()
     if isinstance(task_targets, dict):
         for target in task_targets.values():
             if isinstance(target, dict):
-                label = target.get("label")
+                label = target.get('label')
                 if label is not None:
                     return str(label).strip().lower()
     raise ValueError(f"Unable to resolve split label for dataset={dataset_id} event_id={event_row.get('event_id')!r}")
 
 
 def _target_split_counts(total_count: int, dataset_id: str) -> dict[str, int]:
-    if dataset_id == "RumourEval":
-        if total_count != sum(RUMOUREVAL_TRAIN_COUNTS.values()):
-            raise ValueError(
-                f"RumourEval train split expected 365 events, got {total_count}"
-            )
-        return dict(RUMOUREVAL_TRAIN_COUNTS)
     split_names = list(RATIO_SPLITS)
     ratios = [GENERIC_SPLIT_RATIOS[name] for name in split_names]
     scaled = [total_count * ratio / sum(ratios) for ratio in ratios]
     counts = [math.floor(value) for value in scaled]
     remainder = total_count - sum(counts)
-    order = sorted(
-        range(len(split_names)),
-        key=lambda idx: (scaled[idx] - counts[idx], ratios[idx], -idx),
-        reverse=True,
-    )
+    order = sorted(range(len(split_names)), key=lambda idx: (scaled[idx] - counts[idx], ratios[idx], -idx), reverse=True)
     for idx in order[:remainder]:
         counts[idx] += 1
     return {split_names[idx]: int(counts[idx]) for idx in range(len(split_names))}
@@ -224,57 +210,12 @@ def _choose_split(remaining: dict[str, int], target: dict[str, int], *, preferre
     return max(candidates, key=_score)
 
 
-def _build_split_assignments(
-    dataset_id: str,
-    event_rows: list[dict[str, object]],
-    annotation_rows: list[dict[str, object]],
-    split_seed: int,
-    *,
-    label_map: dict[str, str] | None = None,
-) -> dict[str, SplitAssignment]:
+def _build_split_assignments(dataset_id: str, event_rows: list[dict[str, object]], annotation_rows: list[dict[str, object]], split_seed: int, *, label_map: dict[str, str] | None=None) -> dict[str, SplitAssignment]:
     rng = random.Random(int(split_seed))
     label_map = label_map or _build_split_label_map(dataset_id, annotation_rows)
     assignments: dict[str, SplitAssignment] = {}
-
-    if dataset_id == "RumourEval":
-        train_rows: list[dict[str, object]] = []
-        test_rows: list[dict[str, object]] = []
-        for row in event_rows:
-            original_split = _stringify_split(row.get("split") if row.get("split") is not None else row.get("canonical_split"))
-            if original_split == "train":
-                train_rows.append(row)
-            elif original_split == "test":
-                test_rows.append(row)
-            else:
-                raise ValueError(
-                    f"RumourEval expected raw canonical_split in {{'train','test'}}, got {original_split!r} for event_id={row.get('event_id')!r}"
-                )
-        target_counts = _target_split_counts(len(train_rows), dataset_id)
-        assignments.update(
-            _stratified_assignments(
-                train_rows,
-                target_counts,
-                label_map=label_map,
-                preferred_order=RUMOUREVAL_SPLITS,
-                rng=rng,
-            )
-        )
-        for row in test_rows:
-            event_id = str(row["event_id"])
-            raw_split_source = _original_split_source(row)
-            assignments[event_id] = SplitAssignment(canonical_split="test", raw_split_source=raw_split_source)
-        return assignments
-
     target_counts = _target_split_counts(len(event_rows), dataset_id)
-    assignments.update(
-        _stratified_assignments(
-            event_rows,
-            target_counts,
-            label_map=label_map,
-            preferred_order=RATIO_SPLITS,
-            rng=rng,
-        )
-    )
+    assignments.update(_stratified_assignments(event_rows, target_counts, label_map=label_map, preferred_order=RATIO_SPLITS, rng=rng))
     return assignments
 
 

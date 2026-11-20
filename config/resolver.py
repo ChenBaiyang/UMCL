@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from contextvars import ContextVar, Token
 from typing import Any
 
 from config.event_pipeline import EventPipelineConfig
@@ -25,6 +26,24 @@ LEGACY_FUSION_OVERRIDE_KEYS = {
     "reply_count_bucket_edges",
     "propagation_node_count_bucket_edges",
 }
+PRETRAINED_MODEL_VIEWS = frozenset({"content", "stance"})
+_PRETRAINED_MODEL_OVERRIDE: ContextVar[str | None] = ContextVar(
+    "pretrained_model_override",
+    default=None,
+)
+
+
+def set_pretrained_model_override(model_name: str | None) -> Token:
+    """Temporarily override the HuggingFace model used by text encoders."""
+    if model_name is not None:
+        model_name = str(model_name).strip()
+        if not model_name:
+            raise ValueError("pretrained_model must not be empty.")
+    return _PRETRAINED_MODEL_OVERRIDE.set(model_name)
+
+
+def reset_pretrained_model_override(token: Token) -> None:
+    _PRETRAINED_MODEL_OVERRIDE.reset(token)
 
 
 def resolve_event_pipeline_config(dataset_id: str, mode: Mode = "full") -> EventPipelineConfig:
@@ -35,10 +54,11 @@ def resolve_event_pipeline_config(dataset_id: str, mode: Mode = "full") -> Event
 
 def resolve_encoder_config(view_name: ViewName | str, dataset_id: str, mode: Mode = "full") -> Any:
     view_name = str(view_name)
-    if view_name not in ENCODER_CONFIG_CLASSES:
-        raise KeyError(f"Unknown encoder view: {view_name}")
     config = ENCODER_CONFIG_CLASSES[view_name](dataset_id=dataset_id)
     overrides = resolve_stage_overrides(mode, dataset_id, "encoders", view_name)
+    pretrained_model = _PRETRAINED_MODEL_OVERRIDE.get()
+    if pretrained_model is not None and view_name in PRETRAINED_MODEL_VIEWS:
+        overrides = {**overrides, "model_name_value": pretrained_model}
     return apply_overrides(config, overrides)
 
 

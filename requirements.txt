@@ -1,0 +1,4 @@
+python>=3.10
+torch>=2.7
+transformers>=5.5.0
+torch-geometric>=2.7.0

@@ -1,4 +1,4 @@
-﻿"""Canonical conversion for RumourEval."""
+﻿"""Canonical conversion for PHEME, Twitter15, Twitter16, and Weibo."""
 
 from __future__ import annotations
 
@@ -504,7 +504,7 @@ def _convert_single_weibo_event(task: tuple[int, str, str, list[str], str]) -> d
         },
     )
 
-    label = RumdectTwitterCanonicalConverter._map_label(label_raw)
+    label = _map_weibo_label(label_raw)
     annotation = None
     validation_warnings: list[str] = []
     if label is None:
@@ -619,16 +619,10 @@ def parse_created_at(platform: str, payload: dict[str, Any]) -> tuple[str | None
     return _parse_unix_time(value)
 
 
-def canonical_post_id(platform: str, raw_post_id: str) -> str:
-    return f"RumourEval:post:{platform}:{raw_post_id}"
 
 
-def canonical_user_id(platform: str, raw_user_id: str) -> str:
-    return f"RumourEval:user:{platform}:{raw_user_id}"
 
 
-def canonical_event_id(platform: str, split_name: str, thread_id: str) -> str:
-    return f"RumourEval:event:{platform}:{split_name}:{thread_id}"
 
 
 def normalize_url(url: str) -> str:
@@ -683,48 +677,8 @@ def _twitter_refs(payload: dict[str, Any]) -> list[dict[str, Any]]:
     return rows
 
 
-def _reddit_refs(payload: dict[str, Any], text_raw: str | None, is_source: bool) -> list[dict[str, Any]]:
-    rows: list[dict[str, Any]] = []
-    if is_source:
-        raw_url = payload.get("url")
-        if isinstance(raw_url, str) and raw_url.strip():
-            rows.append({"ref_type": "url", "raw_value": raw_url, "extra": {"source": "payload.url"}})
-        preview = payload.get("preview")
-        if isinstance(preview, dict):
-            for image in preview.get("images") or []:
-                if isinstance(image, dict) and isinstance(image.get("source"), dict):
-                    raw_value = image["source"].get("url")
-                    if isinstance(raw_value, str) and raw_value.strip():
-                        rows.append({"ref_type": "media", "raw_value": raw_value, "extra": {"source": "preview.images"}})
-    if text_raw:
-        for match in URL_PATTERN.findall(text_raw):
-            rows.append({"ref_type": "url", "raw_value": match, "extra": {"source": "text_raw"}})
-    return rows
 
 
-def _collect_raw_tree_parent_map(raw_payload: Any) -> dict[str, str | None]:
-    parent_map: dict[str, str | None] = {}
-
-    def walk(node: Any, parent_raw_id: str | None = None) -> None:
-        if isinstance(node, dict):
-            kind = node.get("kind")
-            data = node.get("data")
-            if kind in {"t1", "t3"} and isinstance(data, dict):
-                raw_id = str(data.get("id") or "").strip()
-                if raw_id:
-                    parent_map[raw_id] = parent_raw_id
-                replies = data.get("replies")
-                if isinstance(replies, (dict, list)):
-                    walk(replies, raw_id or parent_raw_id)
-                return
-            for value in node.values():
-                walk(value, parent_raw_id)
-        elif isinstance(node, list):
-            for item in node:
-                walk(item, parent_raw_id)
-
-    walk(raw_payload, None)
-    return parent_map
 
 
 def _collect_structure_parent_map(structure: Any, parent_raw_id: str | None = None) -> dict[str, str | None]:
@@ -741,563 +695,44 @@ def _collect_structure_parent_map(structure: Any, parent_raw_id: str | None = No
     return parent_map
 
 
-class RumourEvalCanonicalConverter:
-    dataset_id = "RumourEval"
+def _normalize_parent_raw_id(value: Any) -> str | None:
+    if value is None:
+        return None
+    text = str(value).strip()
+    if not text:
+        return None
+    if text.startswith('t1_') or text.startswith('t3_'):
+        text = text.split('_', 1)[1]
+    return text
 
-    def __init__(self, input_root: str | Path, output_root: str | Path) -> None:
-        self.input_root = input_root
-        self.output_root = Path(output_root)
-        self.events: list[EventRecord] = []
-        self.posts_by_id: dict[str, PostRecord] = {}
-        self.users_by_id: dict[str, UserRecord] = {}
-        self.references: list[ReferenceRecord] = []
-        self.annotations: list[AnnotationRecord] = []
-        self.thread_index: dict[str, dict[str, str]] = {}
-        self.validation_errors: list[str] = []
-        self.validation_warnings: list[str] = []
-        self.skipped_items: list[dict[str, Any]] = []
 
-    def convert(self) -> dict[str, Any]:
-        self.output_root.mkdir(parents=True, exist_ok=True)
-        started_at = time.perf_counter()
-
-        meta = DatasetMeta(
-            dataset_id=self.dataset_id,
-            platform="twitter+reddit",
-            task_family="rumour_veracity_and_stance",
-            time_format="iso_8601_utc",
-            label_spaces={
-                "veracity": ["true", "false", "unverified"],
-                "stance": ["support", "deny", "query", "comment"],
-            },
-            notes=(
-                "Canonical conversion of RumourEval. One event equals one "
-                "source post thread. Only explicit observable information and "
-                "gold annotations are retained."
-            ),
-        )
-
-        self._convert_threads()
-        self._convert_annotations()
-        refresh_stance_view_status(self.events, self.posts_by_id, self.annotations)
-        report = self._validate()
-        self._write_outputs(meta, report)
-        return report
-
-    def _convert_threads(self) -> None:
-        roots = [
-            (self.input_root / "rumoureval-2019-training-data" / "twitter-english", "twitter", "train", "train"),
-            (self.input_root / "rumoureval-2019-training-data" / "reddit-training-data", "reddit", "train", "train"),
-            (self.input_root / "rumoureval-2019-training-data" / "reddit-dev-data", "reddit", "train", "dev"),
-            (self.input_root / "rumoureval-2019-test-data" / "twitter-en-test-data", "twitter", "test", "test"),
-            (self.input_root / "rumoureval-2019-test-data" / "reddit-test-data", "reddit", "test", "test"),
-        ]
-        for root, platform, split_name, raw_split_source in roots:
-            if not root.exists():
-                self.validation_warnings.append(f"Missing expected root: {root}")
-                continue
-            if platform == "twitter":
-                for topic_dir in sorted(path for path in root.iterdir() if path.is_dir()):
-                    for thread_dir in sorted(path for path in topic_dir.iterdir() if path.is_dir()):
-                        self._convert_thread(thread_dir, platform, split_name, raw_split_source, topic_dir.name)
-            else:
-                for thread_dir in sorted(path for path in root.iterdir() if path.is_dir()):
-                    self._convert_thread(thread_dir, platform, split_name, raw_split_source, None)
-
-    def _convert_thread(
-        self,
-        thread_dir: Path,
-        platform: str,
-        split_name: str,
-        raw_split_source: str,
-        topic: str | None,
-    ) -> None:
-        source_paths = sorted((thread_dir / "source-tweet").glob("*.json"))
-        if not source_paths:
-            self.skipped_items.append({"type": "thread", "path": str(thread_dir), "reason": "missing source post"})
-            return
-
-        source_payload = safe_read_json(source_paths[0])
-        if platform == "reddit":
-            source_payload = _unwrap_reddit_payload(source_payload)
-        if not isinstance(source_payload, dict) or not source_payload:
-            self.skipped_items.append({"type": "thread", "path": str(thread_dir), "reason": "unreadable source post"})
-            return
-
-        thread_raw_id = thread_dir.name
-        source_raw_id = str(source_payload.get("id_str") or source_payload.get("id") or thread_raw_id).strip()
-        if not source_raw_id:
-            self.skipped_items.append({"type": "thread", "path": str(thread_dir), "reason": "missing source id"})
-            return
-
-        event_id = canonical_event_id(platform, split_name, thread_raw_id)
-        source_post_id = canonical_post_id(platform, source_raw_id)
-        replies: list[dict[str, Any]] = []
-        for reply_path in sorted((thread_dir / "replies").glob("*.json")):
-            payload = safe_read_json(reply_path)
-            if platform == "reddit":
-                payload = _unwrap_reddit_payload(payload)
-            if isinstance(payload, dict) and payload:
-                replies.append(payload)
-
-        raw_tree = safe_read_json(thread_dir / "raw.json") if (thread_dir / "raw.json").exists() else {}
-        structure = safe_read_json(thread_dir / "structure.json") if (thread_dir / "structure.json").exists() else {}
-        raw_parent_map = _collect_raw_tree_parent_map(raw_tree)
-        structure_parent_map = _collect_structure_parent_map(structure, source_raw_id)
-
-        created_times: list[str] = []
-        source_post = self._build_post(source_payload, platform, event_id, source_post_id, "source", None)
-        if source_post.engagement.get("reply_count") is None:
-            source_post.engagement["reply_count"] = len(replies)
-        self.posts_by_id[source_post.post_id] = source_post
-        if source_post.created_at:
-            created_times.append(source_post.created_at)
-
-        for payload in replies:
-            raw_reply_id = str(payload.get("id_str") or payload.get("id") or "").strip()
-            if not raw_reply_id:
-                self.skipped_items.append({"type": "reply", "path": str(thread_dir), "reason": "missing reply id"})
-                continue
-            parent_raw_id = self._normalize_parent_raw_id(
-                payload.get("in_reply_to_status_id_str")
-                or payload.get("in_reply_to_status_id")
-                or payload.get("parent_id")
-            )
-            parent_inferred = False
-            if not parent_raw_id:
-                parent_raw_id = raw_parent_map.get(raw_reply_id) or structure_parent_map.get(raw_reply_id)
-                parent_inferred = parent_raw_id is not None
-            if not parent_raw_id:
-                parent_raw_id = source_raw_id
-                parent_inferred = True
-            parent_post_id = canonical_post_id(platform, parent_raw_id)
-            reply_post = self._build_post(payload, platform, event_id, source_post_id, "response", parent_post_id)
-            if parent_inferred:
-                reply_post.extra["parent_inferred"] = True
-            self.posts_by_id[reply_post.post_id] = reply_post
-            if reply_post.created_at:
-                created_times.append(reply_post.created_at)
-
-        self.events.append(
-            EventRecord(
-                event_id=event_id,
-                dataset_id=self.dataset_id,
-                platform=platform,
-                source_post_id=source_post_id,
-                split=split_name,
-                topic=topic,
-                lang="en",
-                start_time=min(created_times) if created_times else None,
-                end_time=max(created_times) if created_times else None,
-                view_status={
-                    "semantic": "available",
-                    "stance": "text_only",
-                    "propagation": "full_tree" if structure else "flat",
-                    "evidence": "none",
-                    "source": "partial",
-                },
-                extra={
-                    "thread_path": str(thread_dir),
-                    "raw_split_source": raw_split_source,
-                    "has_raw_json": (thread_dir / "raw.json").exists(),
-                    "topic_dir": topic,
-                },
-            )
-        )
-        self.thread_index[source_raw_id] = {
-            "event_id": event_id,
-            "source_post_id": source_post_id,
-        }
-        self.thread_index[thread_raw_id] = dict(self.thread_index[source_raw_id])
-
-    def _build_post(
-        self,
-        payload: dict[str, Any],
-        platform: str,
-        event_id: str,
-        root_post_id: str,
-        post_type: str,
-        parent_post_id: str | None,
-    ) -> PostRecord:
-        raw_post_id = str(payload.get("id_str") or payload.get("id") or "").strip()
-        post_id = canonical_post_id(platform, raw_post_id)
-        user_id = self._upsert_user(platform, payload)
-        created_at, created_raw = parse_created_at(platform, payload)
-        text_raw = _extract_text(platform, payload, is_source=(post_type == "source"))
-
-        like_count = self._as_int(payload.get("favorite_count")) if platform == "twitter" else self._as_int(payload.get("score"))
-        reply_count = self._as_int(payload.get("reply_count")) if platform == "twitter" else None
-        repost_count = self._as_int(payload.get("retweet_count")) if platform == "twitter" else None
-
-        refs = self._extract_references(platform, payload, text_raw, event_id, post_id, post_type == "source")
-        self.references.extend(refs)
-
-        extra: dict[str, Any] = {}
-        if created_raw is not None:
-            extra["created_at_raw"] = created_raw
-        if payload.get("_reddit_kind") == "more":
-            extra["reddit_kind"] = "more"
-        for key in ["subreddit", "domain", "permalink", "conversation_id", "possibly_sensitive", "author_flair_text", "thumbnail", "is_video"]:
-            if key in payload:
-                extra[key] = payload.get(key)
-
-        return PostRecord(
-            post_id=post_id,
-            event_id=event_id,
-            user_id=user_id,
-            post_type=post_type,
-            interaction_type="source" if post_type == "source" else "reply",
-            text_status=classify_text_status(
-                text_raw,
-                missing_policy="unknown" if payload.get("_reddit_kind") == "more" else "empty",
-            ) if post_type != "source" else classify_text_status(text_raw, missing_policy="unknown"),
-            parent_post_id=parent_post_id,
-            root_post_id=root_post_id,
-            created_at=created_at,
-            text_raw=text_raw,
-            lang="en",
-            engagement={
-                "like_count": like_count,
-                "reply_count": reply_count,
-                "repost_count": repost_count,
-            },
-            has_media=any(ref.ref_type == "media" for ref in refs),
-            has_url=any(ref.ref_type == "url" for ref in refs),
-            extra=extra,
-        )
-
-    def _extract_references(
-        self,
-        platform: str,
-        payload: dict[str, Any],
-        text_raw: str | None,
-        event_id: str,
-        post_id: str,
-        is_source: bool,
-    ) -> list[ReferenceRecord]:
-        raw_refs = _twitter_refs(payload) if platform == "twitter" else _reddit_refs(payload, text_raw, is_source)
-        rows: list[ReferenceRecord] = []
-        seen: set[tuple[str, str]] = set()
-        for ref in raw_refs:
-            raw_value = ref["raw_value"]
-            if not isinstance(raw_value, str) or not raw_value.strip():
-                continue
-            key = (ref["ref_type"], raw_value.strip())
-            if key in seen:
-                continue
-            seen.add(key)
-            normalized_value = normalize_url(raw_value)
-            rows.append(
-                ReferenceRecord(
-                    ref_id=f"RumourEval:ref:{post_id}:{len(rows)}",
-                    event_id=event_id,
-                    post_id=post_id,
-                    ref_type=ref["ref_type"],
-                    raw_value=raw_value,
-                    normalized_value=normalized_value,
-                    domain=urlparse(normalized_value).netloc.lower() or None,
-                    target_post_id=None,
-                    extra=ref.get("extra", {}),
-                )
-            )
-        return rows
-
-    def _upsert_user(self, platform: str, payload: dict[str, Any]) -> str | None:
-        if platform == "twitter":
-            user_payload = payload.get("user") if isinstance(payload.get("user"), dict) else {}
-            raw_user_id = str(
-                user_payload.get("id_str")
-                or user_payload.get("id")
-                or user_payload.get("screen_name")
-                or ""
-            ).strip()
-            if not raw_user_id:
-                return None
-            user_id = canonical_user_id(platform, raw_user_id)
-            if user_id not in self.users_by_id:
-                account_created_at, raw_created = parse_created_at(platform, user_payload)
-                extra: dict[str, Any] = {}
-                for key in ["screen_name", "listed_count"]:
-                    if key in user_payload:
-                        extra[key] = user_payload.get(key)
-                if raw_created is not None:
-                    extra["account_created_at_raw"] = raw_created
-                self.users_by_id[user_id] = UserRecord(
-                    user_id=user_id,
-                    platform=platform,
-                    account_created_at=account_created_at,
-                    verified=self._as_bool_or_none(user_payload.get("verified")),
-                    followers_count=self._as_int(user_payload.get("followers_count")),
-                    following_count=self._as_int(user_payload.get("friends_count")),
-                    post_count=self._as_int(user_payload.get("statuses_count")),
-                    profile_description_raw=self._as_text_or_none(user_payload.get("description")),
-                    display_name_raw=self._as_text_or_none(user_payload.get("name")),
-                    extra=extra,
-                )
-            return user_id
-
-        raw_author = (str(payload.get("author") or "[deleted]").strip() or "[deleted]")
-        user_id = canonical_user_id(platform, raw_author)
-        if user_id not in self.users_by_id:
-            extra: dict[str, Any] = {}
-            for key in ["subreddit", "author_flair_text", "author_flair_css_class"]:
-                if key in payload:
-                    extra[key] = payload.get(key)
-            self.users_by_id[user_id] = UserRecord(
-                user_id=user_id,
-                platform=platform,
-                account_created_at=None,
-                verified=None,
-                followers_count=None,
-                following_count=None,
-                post_count=None,
-                profile_description_raw=None,
-                display_name_raw=raw_author,
-                extra=extra,
-            )
-        return user_id
-
-    def _convert_annotations(self) -> None:
-        files = [
-            (self.input_root / "rumoureval-2019-training-data" / "train-key.json", "train-key.json"),
-            (self.input_root / "rumoureval-2019-training-data" / "dev-key.json", "dev-key.json"),
-            (self.input_root / "rumoureval-2019-test-data" / "test-key.json", "test-key.json"),
-        ]
-        for path, file_name in files:
-            if not path.exists():
-                self.validation_warnings.append(f"Missing annotation file: {path}")
-                continue
-            payload = safe_read_json(path)
-            if not isinstance(payload, dict):
-                self.validation_warnings.append(f"Unreadable annotation file: {path}")
-                continue
-
-            stance_map = payload.get("subtaskaenglish") or {}
-            if isinstance(stance_map, dict):
-                for raw_post_id, raw_label in stance_map.items():
-                    label = str(raw_label).strip().lower()
-                    if label not in STANCE_LABELS:
-                        continue
-                    target_post_id = self._find_post_id_by_raw_id(str(raw_post_id))
-                    if target_post_id is None:
-                        self.validation_warnings.append(f"Missing stance target post for raw id {raw_post_id}")
-                        continue
-                    anchor_post_id = self.posts_by_id[target_post_id].root_post_id
-                    self.annotations.append(
-                        AnnotationRecord(
-                            annotation_id=f"RumourEval:ann:stance:{target_post_id}",
-                            target_type="post",
-                            target_id=target_post_id,
-                            task="stance",
-                            label=label,
-                            label_space="stance",
-                            original_label=str(raw_label),
-                            anchor_post_id=anchor_post_id,
-                            annotator_kind="gold",
-                            confidence=None,
-                            extra={
-                                "source_file": file_name,
-                                "source_table": "subtaskaenglish",
-                                "raw_post_id": str(raw_post_id),
-                            },
-                        )
-                    )
-
-            veracity_map = payload.get("subtaskbenglish") or {}
-            if isinstance(veracity_map, dict):
-                for raw_event_id, raw_label in veracity_map.items():
-                    label = str(raw_label).strip().lower()
-                    if label not in VERACITY_LABELS:
-                        continue
-                    event_ref = self.thread_index.get(str(raw_event_id))
-                    if event_ref is None:
-                        self.validation_warnings.append(f"Missing veracity target event for raw id {raw_event_id}")
-                        continue
-                    self.annotations.append(
-                        AnnotationRecord(
-                            annotation_id=f"RumourEval:ann:veracity:{event_ref['event_id']}",
-                            target_type="event",
-                            target_id=event_ref["event_id"],
-                            task="veracity",
-                            label=label,
-                            label_space="veracity",
-                            original_label=str(raw_label),
-                            anchor_post_id=event_ref["source_post_id"],
-                            annotator_kind="gold",
-                            confidence=None,
-                            extra={
-                                "source_file": file_name,
-                                "source_table": "subtaskbenglish",
-                                "raw_event_id": str(raw_event_id),
-                            },
-                        )
-                    )
-
-        stance_anchor_ids = {
-            annotation.anchor_post_id
-            for annotation in self.annotations
-            if annotation.task == "stance" and annotation.anchor_post_id
-        }
-        for event in self.events:
-            if event.source_post_id in stance_anchor_ids:
-                event.view_status["stance"] = "gold"
-
-    def _find_post_id_by_raw_id(self, raw_post_id: str) -> str | None:
-        for platform in ["twitter", "reddit"]:
-            post_id = canonical_post_id(platform, raw_post_id)
-            if post_id in self.posts_by_id:
-                return post_id
+def _as_int(value: Any) -> int | None:
+    try:
+        if value is None or value == '':
+            return None
+        return int(value)
+    except (TypeError, ValueError):
         return None
 
-    def _validate(self) -> dict[str, Any]:
-        event_map = {event.event_id: event for event in self.events}
-        posts_by_event: dict[str, list[PostRecord]] = defaultdict(list)
-        for post in self.posts_by_id.values():
-            posts_by_event[post.event_id].append(post)
 
-        for event in self.events:
-            source_posts = [post for post in posts_by_event[event.event_id] if post.post_type == "source"]
-            if len(source_posts) != 1:
-                self.validation_errors.append(
-                    f"Event {event.event_id} must have exactly one source post, found {len(source_posts)}"
-                )
-                continue
-            source_post = source_posts[0]
-            if source_post.post_id != event.source_post_id:
-                self.validation_errors.append(
-                    f"Event {event.event_id} source_post_id mismatch: {event.source_post_id} vs {source_post.post_id}"
-                )
-            if source_post.parent_post_id is not None:
-                self.validation_errors.append(f"Source post {source_post.post_id} has non-null parent_post_id")
-            if source_post.root_post_id != source_post.post_id:
-                self.validation_errors.append(f"Source post {source_post.post_id} root_post_id must equal post_id")
-            root_ids = {post.root_post_id for post in posts_by_event[event.event_id]}
-            if root_ids != {event.source_post_id}:
-                self.validation_errors.append(
-                    f"Event {event.event_id} posts do not share a single root_post_id: {sorted(root_ids)}"
-                )
-
-        for annotation in self.annotations:
-            if annotation.target_type == "event" and annotation.target_id not in event_map:
-                self.validation_errors.append(f"Missing event annotation target: {annotation.target_id}")
-            if annotation.target_type == "post" and annotation.target_id not in self.posts_by_id:
-                self.validation_errors.append(f"Missing post annotation target: {annotation.target_id}")
-        for post in self.posts_by_id.values():
-            validate_post_schema(post, self.validation_errors)
-
-        split_counts = {"train": 0, "test": 0}
-        platform_counts = {"twitter": 0, "reddit": 0}
-        view_coverage: dict[str, dict[str, int]] = {
-            key: defaultdict(int) for key in ["semantic", "stance", "propagation", "evidence", "source"]
-        }
-        annotations_by_task = Counter(annotation.task for annotation in self.annotations)
-        event_ids_with_references = {reference.event_id for reference in self.references}
-        post_ids_with_references = {reference.post_id for reference in self.references}
-        posts_with_url = {post.post_id for post in self.posts_by_id.values() if post.has_url}
-        posts_with_media = {post.post_id for post in self.posts_by_id.values() if post.has_media}
-        for event in self.events:
-            split_counts[event.split] = split_counts.get(event.split, 0) + 1
-            platform_counts[event.platform] = platform_counts.get(event.platform, 0) + 1
-            for key, value in event.view_status.items():
-                view_coverage[key][value] += 1
-
-        return {
-            "dataset_id": self.dataset_id,
-            "counts": {
-                "events": len(self.events),
-                "posts": len(self.posts_by_id),
-                "users": len(self.users_by_id),
-                "references": len(self.references),
-                "annotations": len(self.annotations),
-            },
-            "split_counts": split_counts,
-            "platform_counts": platform_counts,
-            "annotation_coverage": {
-                "events_with_veracity_labels": len({ann.target_id for ann in self.annotations if ann.task == "veracity"}),
-                "posts_with_stance_labels": len({ann.target_id for ann in self.annotations if ann.task == "stance"}),
-            },
-            "annotations_by_task": dict(annotations_by_task),
-            "local_raw_annotation_counts": self._collect_local_raw_annotation_counts(),
-            "reference_coverage": {
-                "events_with_references": len(event_ids_with_references),
-                "posts_with_references": len(post_ids_with_references),
-                "posts_with_url": len(posts_with_url),
-                "posts_with_media": len(posts_with_media),
-            },
-            "view_coverage": {key: dict(value) for key, value in view_coverage.items()},
-            "validation_errors": self.validation_errors,
-            "validation_warnings": self.validation_warnings,
-            "skipped_items": self.skipped_items,
-            "schema_valid": len(self.validation_errors) == 0,
-        }
-
-    def _write_outputs(self, meta: DatasetMeta, report: dict[str, Any]) -> None:
-        write_json(self.output_root / "dataset_meta.json", meta.to_dict())
-        write_jsonl(self.output_root / "events.jsonl", [row.to_dict() for row in self.events])
-        write_jsonl(self.output_root / "posts.jsonl", [row.to_dict() for row in self.posts_by_id.values()])
-        write_jsonl(self.output_root / "users.jsonl", [row.to_dict() for row in self.users_by_id.values()])
-        write_jsonl(self.output_root / "references.jsonl", [row.to_dict() for row in self.references])
-        write_jsonl(self.output_root / "annotations.jsonl", [row.to_dict() for row in self.annotations])
-        write_json(self.output_root / "validation_report.json", report)
-
-    @staticmethod
-    def _normalize_parent_raw_id(value: Any) -> str | None:
-        if value is None:
-            return None
-        text = str(value).strip()
-        if not text:
-            return None
-        if text.startswith("t1_") or text.startswith("t3_"):
-            text = text.split("_", 1)[1]
-        return text
-
-    @staticmethod
-    def _as_int(value: Any) -> int | None:
-        try:
-            if value is None or value == "":
-                return None
-            return int(value)
-        except (TypeError, ValueError):
-            return None
-
-    @staticmethod
-    def _as_bool_or_none(value: Any) -> bool | None:
-        if isinstance(value, bool):
-            return value
-        if value is None:
-            return None
-        text = str(value).strip().lower()
-        if text in {"true", "1"}:
-            return True
-        if text in {"false", "0"}:
-            return False
+def _as_bool_or_none(value: Any) -> bool | None:
+    if isinstance(value, bool):
+        return value
+    if value is None:
         return None
+    text = str(value).strip().lower()
+    if text in {'true', '1'}:
+        return True
+    if text in {'false', '0'}:
+        return False
+    return None
 
-    @staticmethod
-    def _as_text_or_none(value: Any) -> str | None:
-        if isinstance(value, str):
-            stripped = value.strip()
-            return stripped or None
-        return None
 
-    def _collect_local_raw_annotation_counts(self) -> dict[str, dict[str, int]]:
-        counts: dict[str, dict[str, int]] = {}
-        files = [
-            ("train", self.input_root / "rumoureval-2019-training-data" / "train-key.json"),
-            ("dev", self.input_root / "rumoureval-2019-training-data" / "dev-key.json"),
-            ("test", self.input_root / "rumoureval-2019-test-data" / "test-key.json"),
-        ]
-        for split_name, path in files:
-            if not path.exists():
-                continue
-            payload = safe_read_json(path)
-            if not isinstance(payload, dict):
-                continue
-            counts[split_name] = {
-                "subtaskaenglish": len(payload.get("subtaskaenglish") or {}),
-                "subtaskbenglish": len(payload.get("subtaskbenglish") or {}),
-            }
-        return counts
+def _as_text_or_none(value: Any) -> str | None:
+    if isinstance(value, str):
+        stripped = value.strip()
+        return stripped or None
+    return None
 
 
 class PhemeVeracityCanonicalConverter:
@@ -1411,7 +846,7 @@ class PhemeVeracityCanonicalConverter:
                     {"type": "reaction", "path": str(thread_dir), "reason": "duplicate source tweet inside reactions"}
                 )
                 continue
-            parent_raw_id = RumourEvalCanonicalConverter._normalize_parent_raw_id(
+            parent_raw_id = _normalize_parent_raw_id(
                 payload.get("in_reply_to_status_id_str") or payload.get("in_reply_to_status_id")
             )
             parent_inferred = False
@@ -1451,7 +886,7 @@ class PhemeVeracityCanonicalConverter:
             annotation_payload=annotation_payload,
         )
 
-        source_lang = RumourEvalCanonicalConverter._as_text_or_none(source_payload.get("lang"))
+        source_lang = _as_text_or_none(source_payload.get("lang"))
         evidence_view = "explicit_refs" if any(ref.ref_type == "url" for ref in event_refs) else "none"
         if reactions:
             propagation_view = "star" if star_tree else "full_tree"
@@ -1592,11 +1027,11 @@ class PhemeVeracityCanonicalConverter:
             root_post_id=root_post_id,
             created_at=created_at,
             text_raw=text_raw,
-            lang=RumourEvalCanonicalConverter._as_text_or_none(payload.get("lang")),
+            lang=_as_text_or_none(payload.get("lang")),
             engagement={
-                "like_count": RumourEvalCanonicalConverter._as_int(payload.get("favorite_count")),
+                "like_count": _as_int(payload.get("favorite_count")),
                 "reply_count": None,
-                "repost_count": RumourEvalCanonicalConverter._as_int(payload.get("retweet_count")),
+                "repost_count": _as_int(payload.get("retweet_count")),
             },
             has_media=any(ref.ref_type == "media" for ref in refs),
             has_url=any(ref.ref_type == "url" for ref in refs),
@@ -1654,12 +1089,12 @@ class PhemeVeracityCanonicalConverter:
                     user_id=user_id,
                     platform="twitter",
                     account_created_at=account_created_at,
-                    verified=RumourEvalCanonicalConverter._as_bool_or_none(user_payload.get("verified")),
-                    followers_count=RumourEvalCanonicalConverter._as_int(user_payload.get("followers_count")),
-                    following_count=RumourEvalCanonicalConverter._as_int(user_payload.get("friends_count")),
-                    post_count=RumourEvalCanonicalConverter._as_int(user_payload.get("statuses_count")),
-                    profile_description_raw=RumourEvalCanonicalConverter._as_text_or_none(user_payload.get("description")),
-                    display_name_raw=RumourEvalCanonicalConverter._as_text_or_none(user_payload.get("name")),
+                    verified=_as_bool_or_none(user_payload.get("verified")),
+                    followers_count=_as_int(user_payload.get("followers_count")),
+                    following_count=_as_int(user_payload.get("friends_count")),
+                    post_count=_as_int(user_payload.get("statuses_count")),
+                    profile_description_raw=_as_text_or_none(user_payload.get("description")),
+                    display_name_raw=_as_text_or_none(user_payload.get("name")),
                     extra=extra,
                 )
             return user_id
@@ -2285,273 +1720,13 @@ class Twitter16CanonicalConverter(RumorDetectionACL2017SubsetCanonicalConverter)
         super().__init__(input_root, output_root, subset="twitter16", dataset_id=self.dataset_id)
 
 
-class RumdectTwitterCanonicalConverter:
-    dataset_id = "RumdectTwitter"
-    label_space = {"rumour_status": ["rumour", "non-rumour"]}
-
-    def __init__(self, input_root: str | Path, output_root: str | Path) -> None:
-        self.input_root = input_root
-        self.output_root = Path(output_root)
-        self.events: list[EventRecord] = []
-        self.posts_by_id: dict[str, PostRecord] = {}
-        self.users_by_id: dict[str, UserRecord] = {}
-        self.references: list[ReferenceRecord] = []
-        self.annotations: list[AnnotationRecord] = []
-        self.validation_errors: list[str] = []
-        self.validation_warnings: list[str] = []
-        self.skipped_items: list[dict[str, Any]] = []
-
-    def convert(self) -> dict[str, Any]:
-        self.output_root.mkdir(parents=True, exist_ok=True)
-
-        meta = DatasetMeta(
-            dataset_id=self.dataset_id,
-            platform="twitter",
-            task_family="rumour_detection",
-            time_format="unavailable",
-            label_spaces=self.label_space,
-            notes=(
-                "Canonical conversion of the RumDect Twitter subset. The raw "
-                "release contains event ids, rumour labels, tweet id lists, "
-                "and optional event claims, but does not release tweet text, "
-                "timestamps, or user metadata."
-            ),
-        )
-
-        self._convert_events()
-        refresh_stance_view_status(self.events, self.posts_by_id, self.annotations)
-        report = self._validate()
-        self._write_outputs(meta, report)
-        return report
-
-    def _convert_events(self) -> None:
-        events_path = self.input_root / "Twitter.txt"
-        claims_path = self.input_root / "Twitter_event_claims.txt"
-        if not events_path.exists():
-            self.validation_warnings.append(f"Missing expected raw file: {events_path}")
-            return
-        claim_map = self._load_claim_map(claims_path)
-
-        for line in _read_text_lines(events_path):
-            text = line.strip()
-            if not text:
-                continue
-            try:
-                eid_part, label_part, tweet_ids_part = text.split("\t", 2)
-            except ValueError:
-                self.skipped_items.append(
-                    {"type": "event", "path": str(events_path), "reason": f"unparseable line: {text[:120]}"}
-                )
-                continue
-
-            event_raw_id = eid_part.replace("eid:", "", 1).strip()
-            label_raw = label_part.replace("label:", "", 1).strip()
-            tweet_ids = [item.strip() for item in tweet_ids_part.split() if item.strip()]
-            if not event_raw_id or not tweet_ids:
-                self.skipped_items.append(
-                    {
-                        "type": "event",
-                        "path": str(events_path),
-                        "reason": f"missing event id or tweet ids: {text[:120]}",
-                    }
-                )
-                continue
-
-            event_id = self._canonical_event_id(event_raw_id)
-            source_tweet_id = tweet_ids[0]
-            source_post_id = self._canonical_post_id(event_raw_id, source_tweet_id)
-            claim = claim_map.get(event_raw_id)
-
-            self.events.append(
-                EventRecord(
-                    event_id=event_id,
-                    dataset_id=self.dataset_id,
-                    platform="twitter",
-                    source_post_id=source_post_id,
-                    split="all",
-                    topic=None,
-                    lang="en",
-                    start_time=None,
-                    end_time=None,
-                    view_status={
-                        "semantic": "claim_only" if claim else "ids_only",
-                        "stance": "none",
-                        "propagation": "flat_list",
-                        "evidence": "none",
-                        "source": "none",
-                    },
-                    extra={
-                        "event_id_raw": event_raw_id,
-                        "label_raw": label_raw,
-                        "tweet_id_count": len(tweet_ids),
-                        "claim_available": claim is not None,
-                    },
-                )
-            )
-
-            self.posts_by_id[source_post_id] = PostRecord(
-                post_id=source_post_id,
-                event_id=event_id,
-                user_id=None,
-                post_type="source",
-                interaction_type="source",
-                text_status=classify_text_status(claim, missing_policy="unknown"),
-                parent_post_id=None,
-                root_post_id=source_post_id,
-                created_at=None,
-                text_raw=claim,
-                lang="en",
-                engagement={"like_count": None, "reply_count": max(len(tweet_ids) - 1, 0), "repost_count": None},
-                has_media=None,
-                has_url=bool(claim and URL_PATTERN.search(claim)),
-                extra={
-                    "event_id_raw": event_raw_id,
-                    "tweet_id_raw": source_tweet_id,
-                    "claim_surrogate_text": claim is not None,
-                    "content_source": "Twitter_event_claims.txt" if claim else None,
-                },
-            )
-
-            for reply_tweet_id in tweet_ids[1:]:
-                post_id = self._canonical_post_id(event_raw_id, reply_tweet_id)
-                self.posts_by_id[post_id] = PostRecord(
-                    post_id=post_id,
-                    event_id=event_id,
-                    user_id=None,
-                    post_type="response",
-                    interaction_type="other",
-                    text_status="unknown",
-                    parent_post_id=source_post_id,
-                    root_post_id=source_post_id,
-                    created_at=None,
-                    text_raw=None,
-                    lang="en",
-                    engagement={"like_count": None, "reply_count": None, "repost_count": None},
-                    has_media=None,
-                    has_url=None,
-                    extra={
-                        "event_id_raw": event_raw_id,
-                        "tweet_id_raw": reply_tweet_id,
-                        "content_available": False,
-                        "metadata_available": False,
-                    },
-                )
-
-            label = self._map_label(label_raw)
-            if label is None:
-                self.validation_warnings.append(f"Unknown label {label_raw!r} for event {event_raw_id}")
-            else:
-                self.annotations.append(
-                    AnnotationRecord(
-                        annotation_id=f"{self.dataset_id}:ann:rumour_status:{event_id}",
-                        target_type="event",
-                        target_id=event_id,
-                        task="rumour_status",
-                        label=label,
-                        label_space="rumour_status",
-                        original_label=label_raw,
-                        anchor_post_id=source_post_id,
-                        annotator_kind="gold",
-                        confidence=None,
-                        extra={"source_file": "Twitter.txt", "event_id_raw": event_raw_id},
-                    )
-                )
-
-    @staticmethod
-    def _load_claim_map(path: Path) -> dict[str, str]:
-        claim_map: dict[str, str] = {}
-        if not path.exists():
-            return claim_map
-        for line in _read_text_lines(path):
-            text = line.rstrip("\n")
-            if not text or "\t" not in text:
-                continue
-            event_part, claim = text.split("\t", 1)
-            event_raw_id = event_part.replace("eid:", "", 1).strip()
-            claim_map[event_raw_id] = claim.strip() or None
-        return claim_map
-
-    @staticmethod
-    def _map_label(label_raw: str) -> str | None:
-        normalized = str(label_raw).strip()
-        if normalized == "1":
-            return "rumour"
-        if normalized == "0":
-            return "non-rumour"
-        return None
-
-    def _validate(self) -> dict[str, Any]:
-        event_map = {event.event_id: event for event in self.events}
-        posts_by_event: dict[str, list[PostRecord]] = defaultdict(list)
-        for post in self.posts_by_id.values():
-            posts_by_event[post.event_id].append(post)
-
-        for event in self.events:
-            source_posts = [post for post in posts_by_event[event.event_id] if post.post_type == "source"]
-            if len(source_posts) != 1:
-                self.validation_errors.append(
-                    f"Event {event.event_id} must have exactly one source post, found {len(source_posts)}"
-                )
-                continue
-            source_post = source_posts[0]
-            if source_post.post_id != event.source_post_id:
-                self.validation_errors.append(
-                    f"Event {event.event_id} source_post_id mismatch: {event.source_post_id} vs {source_post.post_id}"
-                )
-            if source_post.parent_post_id is not None:
-                self.validation_errors.append(f"Source post {source_post.post_id} has non-null parent_post_id")
-
-        for annotation in self.annotations:
-            if annotation.target_type == "event" and annotation.target_id not in event_map:
-                self.validation_errors.append(f"Missing event annotation target: {annotation.target_id}")
-        for post in self.posts_by_id.values():
-            validate_post_schema(post, self.validation_errors)
-
-        return {
-            "dataset_id": self.dataset_id,
-            "counts": {
-                "events": len(self.events),
-                "posts": len(self.posts_by_id),
-                "users": len(self.users_by_id),
-                "references": len(self.references),
-                "annotations": len(self.annotations),
-            },
-            "split_counts": {"all": len(self.events)},
-            "platform_counts": {"twitter": len(self.events)},
-            "annotation_coverage": {
-                "events_with_rumour_status_labels": len(
-                    {ann.target_id for ann in self.annotations if ann.task == "rumour_status"}
-                )
-            },
-            "view_coverage": {
-                "semantic": dict(Counter(event.view_status["semantic"] for event in self.events)),
-                "stance": dict(Counter(event.view_status["stance"] for event in self.events)),
-                "propagation": dict(Counter(event.view_status["propagation"] for event in self.events)),
-                "evidence": dict(Counter(event.view_status["evidence"] for event in self.events)),
-                "source": dict(Counter(event.view_status["source"] for event in self.events)),
-            },
-            "validation_errors": self.validation_errors,
-            "validation_warnings": self.validation_warnings,
-            "skipped_items": self.skipped_items,
-            "schema_valid": len(self.validation_errors) == 0,
-        }
-
-    def _write_outputs(self, meta: DatasetMeta, report: dict[str, Any]) -> None:
-        write_json(self.output_root / "dataset_meta.json", meta.to_dict())
-        write_jsonl(self.output_root / "events.jsonl", [row.to_dict() for row in self.events])
-        write_jsonl(self.output_root / "posts.jsonl", [row.to_dict() for row in self.posts_by_id.values()])
-        write_jsonl(self.output_root / "users.jsonl", [row.to_dict() for row in self.users_by_id.values()])
-        write_jsonl(self.output_root / "references.jsonl", [row.to_dict() for row in self.references])
-        write_jsonl(self.output_root / "annotations.jsonl", [row.to_dict() for row in self.annotations])
-        write_json(self.output_root / "validation_report.json", report)
-
-    @classmethod
-    def _canonical_event_id(cls, event_raw_id: str) -> str:
-        return f"{cls.dataset_id}:event:twitter:{event_raw_id}"
-
-    @classmethod
-    def _canonical_post_id(cls, event_raw_id: str, tweet_id: str) -> str:
-        return f"{cls.dataset_id}:post:twitter:{event_raw_id}:{tweet_id}"
+def _map_weibo_label(label_raw: str) -> str | None:
+    normalized = str(label_raw).strip()
+    if normalized == '1':
+        return 'rumour'
+    if normalized == '0':
+        return 'non-rumour'
+    return None
 
 
 class RumdectWeiboCanonicalConverter:
@@ -2838,7 +2013,7 @@ class RumdectWeiboCanonicalConverter:
             )
         )
 
-        label = RumdectTwitterCanonicalConverter._map_label(label_raw)
+        label = _map_weibo_label(label_raw)
         if label is None:
             self.validation_warnings.append(f"Unknown label {label_raw!r} for Weibo event {event_raw_id}")
         else:

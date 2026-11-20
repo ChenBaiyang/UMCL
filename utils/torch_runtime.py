@@ -4,6 +4,13 @@ import os
 import random
 
 
+DEFAULT_CUBLAS_WORKSPACE_CONFIG = ":4096:8"
+
+# This must be configured before the first CUDA/cuBLAS context is created.
+# Some entrypoints perform CUDA evaluation before they call seed_everything().
+os.environ.setdefault("CUBLAS_WORKSPACE_CONFIG", DEFAULT_CUBLAS_WORKSPACE_CONFIG)
+
+
 def resolve_torch_device(device: str) -> tuple[str, str | None]:
     requested = (device or "auto").strip().lower()
     try:
@@ -43,7 +50,7 @@ def seed_everything(seed: int, *, deterministic: bool = True) -> None:
 
     seed = int(seed)
     os.environ["PYTHONHASHSEED"] = str(seed)
-    os.environ.setdefault("CUBLAS_WORKSPACE_CONFIG", ":4096:8")
+    os.environ.setdefault("CUBLAS_WORKSPACE_CONFIG", DEFAULT_CUBLAS_WORKSPACE_CONFIG)
     random.seed(seed)
     if np is not None:
         np.random.seed(seed)

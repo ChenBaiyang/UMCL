@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import copy
-from dataclasses import fields, is_dataclass
+from dataclasses import fields
 from typing import Any
 
 
@@ -22,8 +22,6 @@ def deep_merge(base: dict[str, Any], incoming: dict[str, Any]) -> dict[str, Any]
 def apply_overrides(config: Any, overrides: dict[str, Any]) -> Any:
     if not overrides:
         return config
-    if not is_dataclass(config):
-        raise TypeError(f"Expected dataclass config, got {type(config)!r}")
     valid_fields = {field.name for field in fields(config)}
     for key, value in overrides.items():
         if key not in valid_fields:

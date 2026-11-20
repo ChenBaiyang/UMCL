@@ -1,22 +1,31 @@
 from __future__ import annotations
 
 import argparse
-import copy
 import csv
 import json
 import time
-from datetime import datetime
 from pathlib import Path
 from typing import Any
 
 import torch
 
-from config.resolver import resolve_encoder_config, resolve_fusion_config
+from config.resolver import (
+    reset_pretrained_model_override,
+    resolve_encoder_config,
+    resolve_fusion_config,
+    set_pretrained_model_override,
+)
 from models.fusion.hierarchical_optimizer import build_hierarchical_optimizer
 from models.fusion.losses import build_loss_weights
 from models.fusion.config import apply_optimizer_config, apply_sample_latent_default, normalize_optimizer_config
-from models.fusion.model import UMCLFiveViewModel
-from models.fusion.training import build_eval_loader, build_train_loader, run_training
+from models.fusion.factory import create_fusion_model
+from models.fusion.training import (
+    BEST_SELECTION_RULE_RAW_MAX,
+    BEST_SELECTION_SCOPE_CANDIDATE_EPOCHS,
+    build_eval_loader,
+    build_train_loader,
+    run_training,
+)
 from models.fusion.view_mask import create_view_mask_from_config, get_mask_name
 from models.artifacts import EnsureArtifactsOptions, ensure_model_inputs
 from models.evaluation import build_test_loader_with_fallback, run_test_from_model
@@ -24,7 +33,15 @@ from utils.jsonl import write_json
 from utils.torch_runtime import seed_everything
 
 
-def run_training_cli(args: argparse.Namespace) -> None:
+def run_training_cli(args: argparse.Namespace, *, fusion_variant: str = "poe") -> None:
+    override_token = set_pretrained_model_override(getattr(args, "pretrained_model", None))
+    try:
+        _run_training_cli(args, fusion_variant=fusion_variant)
+    finally:
+        reset_pretrained_model_override(override_token)
+
+
+def _run_training_cli(args: argparse.Namespace, *, fusion_variant: str = "poe") -> None:
     from train_umcl import (
         _append_result_umcl_row,
         _build_core_hyperparameters,
@@ -44,23 +61,40 @@ def run_training_cli(args: argparse.Namespace) -> None:
         resolve_device,
     )
 
+    is_baseline = fusion_variant != "poe"
+
+    def write_experiment_json(path: Path, payload: dict) -> None:
+        if is_baseline:
+            payload["run"]["fusion_variant"] = fusion_variant
+            payload["hyperparameters"]["fusion_variant"] = fusion_variant
+            if path.name == "run_config.json":
+                payload["project"] = "UMCL_InternalFusion"
+        write_json(path, payload)
+
     dataset_id = args.dataset_id.strip()
     train_splits = parse_split_arg(args.splits)
     eval_splits = parse_split_arg(args.eval_splits)
     mode = "full"
     data_root = Path(args.data_root)
-    device = resolve_device(args.device)
+    device = resolve_device(args.device, args.cuda_index)
     use_amp = resolve_amp(args.amp, device)
     save_best_checkpoint = resolve_checkpoint_choice(args.checkpoint)
     seed = int(args.seed)
     run_started_at = _now_iso()
     run_started_perf = time.perf_counter()
     config = resolve_fusion_config(dataset_id=dataset_id, mode=mode)
+    args.resolved_pretrained_models = {
+        view_name: resolve_encoder_config(view_name, dataset_id, mode).model_name(mode)
+        for view_name in ("content", "stance")
+    }
+    print(f"Using pretrained models: {args.resolved_pretrained_models}")
     config = apply_optimizer_config(config, normalize_optimizer_config(config.optimizer))
+    config.fusion_variant = fusion_variant
     config.data_loader_seed = seed
     config.resolved_overrides = {
         **config.resolved_overrides,
         "data_loader_seed": config.data_loader_seed,
+        "fusion_variant": fusion_variant,
     }
     if args.batch_size is None:
         args.batch_size = int(config.batch_size)
@@ -117,7 +151,8 @@ def run_training_cli(args: argparse.Namespace) -> None:
 
     run_time_at = _now_dirstamp()
     seed_dir_name = f"seed_{seed}"
-    run_dir = Path(args.run_root) / dataset_id / seed_dir_name / run_time_at
+    run_root = Path(args.run_root) / fusion_variant if is_baseline else Path(args.run_root)
+    run_dir = run_root / dataset_id / seed_dir_name / run_time_at
     run_dir.mkdir(parents=True, exist_ok=True)
     core_hyperparameters = _build_core_hyperparameters(
         args=args,
@@ -131,6 +166,8 @@ def run_training_cli(args: argparse.Namespace) -> None:
         active_views=active_views,
         save_best_checkpoint=save_best_checkpoint,
     )
+    if is_baseline:
+        core_hyperparameters["fusion_variant"] = fusion_variant
     loss_weights = build_loss_weights(config)
     print("Artifact ensure results:")
     for result in artifact_results:
@@ -173,7 +210,7 @@ def run_training_cli(args: argparse.Namespace) -> None:
     core_hyperparameters["train_splits"] = selected_train_splits
     core_hyperparameters["eval_splits"] = selected_eval_splits
 
-    model = UMCLFiveViewModel(
+    model = create_fusion_model(
         config,
         feature_dims,
         primary_task_spec=primary_task_spec,
@@ -192,7 +229,7 @@ def run_training_cli(args: argparse.Namespace) -> None:
 
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, **_scheduler_params(optimizer_config))
 
-    write_json(
+    write_experiment_json(
         run_dir / "run_config.json",
         _build_run_config(
             dataset_id=dataset_id,
@@ -219,6 +256,8 @@ def run_training_cli(args: argparse.Namespace) -> None:
     test_start_epoch = max(1, int(args.max_epoch) - int(args.candidate_epochs) + 1)
     eval_log_path = run_dir / "eval_test_report.csv"
     eval_log_fieldnames = _eval_log_fieldnames(list(primary_task_spec["class_names"]))
+    if is_baseline:
+        eval_log_fieldnames.insert(0, "fusion_variant")
     eval_log_path.parent.mkdir(parents=True, exist_ok=True)
     with eval_log_path.open("w", encoding="utf-8", newline="") as eval_log_handle:
         eval_log_writer = csv.DictWriter(eval_log_handle, fieldnames=eval_log_fieldnames)
@@ -291,6 +330,8 @@ def run_training_cli(args: argparse.Namespace) -> None:
                     stance_config=stance_config,
                     propagation_config=propagation_config,
                 )
+                if is_baseline:
+                    latest_test_summary["fusion_variant"] = fusion_variant
                 test_summaries_by_epoch[epoch] = latest_test_summary
             row = _build_eval_log_row(
                 record=epoch_record,
@@ -302,6 +343,8 @@ def run_training_cli(args: argparse.Namespace) -> None:
                 class_names=list(primary_task_spec["class_names"]),
                 test_summary=test_summaries_by_epoch.get(epoch),
             )
+            if is_baseline:
+                row["fusion_variant"] = fusion_variant
             eval_rows_by_epoch[epoch] = row
             eval_log_writer.writerow(row)
             eval_log_handle.flush()
@@ -330,6 +373,12 @@ def run_training_cli(args: argparse.Namespace) -> None:
             on_new_best=on_new_best,
             on_epoch_end=on_epoch_end,
             enable_early_stop=False,
+            **({
+                "best_selection_start_epoch": test_start_epoch,
+                "best_selection_min_delta": 0.0,
+                "best_selection_scope": BEST_SELECTION_SCOPE_CANDIDATE_EPOCHS,
+                "best_selection_rule": BEST_SELECTION_RULE_RAW_MAX,
+            } if not is_baseline else {}),
         )
     last_step = training_result["last_step_record"]
     epoch_records = training_result["epoch_records"]
@@ -358,12 +407,12 @@ def run_training_cli(args: argparse.Namespace) -> None:
         }
         if final_best_row is not None:
             _append_result_umcl_row(
-                Path(__file__).resolve().parents[1] / "result_umcl.csv",
+                Path(__file__).resolve().parents[1] / ("result_internal_fusion.csv" if is_baseline else "result_umcl.csv"),
                 eval_log_fieldnames,
                 final_best_row,
                 timestamp=run_ended_at,
             )
-    write_json(
+    write_experiment_json(
         run_dir / "run_config.json",
         _build_run_config(
             dataset_id=dataset_id,
@@ -422,5 +471,5 @@ def run_training_cli(args: argparse.Namespace) -> None:
         "accuracy": (latest_test_summary["accuracy"] if latest_test_summary is not None else None),
         "per_class_f1": (latest_test_summary["per_class_f1"] if latest_test_summary is not None else None),
     }
-    write_json(run_dir / "summary.json", summary)
+    write_experiment_json(run_dir / "summary.json", summary)
     print(json.dumps(summary["testing"], ensure_ascii=False, indent=2))

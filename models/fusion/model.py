@@ -330,9 +330,9 @@ class UMCLFiveViewModel(nn.Module):
         for view_name, head in self.reconstruction_heads.items():
             mean, logvar = head(z)
             reconstruction_params[view_name] = {
-                "mean": mean, 
-                "logvar": logvar, 
-                "target": targets[view_name]
+                "mean": mean,
+                "logvar": logvar,
+                "target": targets[view_name]#.detach(), # revised 12-Aug-2026 by Baiyang Chen
             }
 
         task_outputs = {

@@ -1,6 +1,8 @@
 """
 View masking utilities for selective testing of individual modalities.
 """
+from __future__ import annotations
+
 from typing import Set, Dict, Any
 
 

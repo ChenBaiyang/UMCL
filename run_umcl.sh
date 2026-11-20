@@ -1,7 +1,11 @@
 #!/bin/bash
 
-export HF_ENDPOINT="https://hf-mirror.com"
+set -euo pipefail
 
+export HF_ENDPOINT="https://hf-mirror.com"
+PYTHON_BIN="${PYTHON_BIN:-python3}"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+cd "$SCRIPT_DIR"
 
 if [ $# -eq 0 ]; then
     echo "Usage: $0 <dataset1> [dataset2] ..."
@@ -13,8 +17,7 @@ fi
 for DATASET in "$@"; do
     for SEED in 2 4 8 16 32; do
         echo "Running dataset: $DATASET, seed: $SEED"
-        python train_umcl.py --dataset_id "$DATASET" --seed "$SEED"
+        "$PYTHON_BIN" run_umcl_pipeline.py --dataset_id "$DATASET" --seed "$SEED"
     done
 done
 
-echo "Results" | msmtp --account=163mail  farstars@qq.com < content_pool.txt

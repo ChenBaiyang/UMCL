@@ -1,39 +1,39 @@
 from __future__ import annotations
 
+from utils.runtime import (
+    resolve_device, resolve_amp, resolve_checkpoint_choice, parse_split_arg,
+    resolve_optimizer_config as _resolve_optimizer_config, scheduler_params as _scheduler_params,
+    now_iso as _now_iso, now_dirstamp as _now_dirstamp,
+)
+
 import csv
 import argparse
 import copy
-import json
-import time
-from datetime import datetime
 from pathlib import Path
 from typing import Any
 import re
 
 import torch
 
-from config.resolver import resolve_encoder_config, resolve_fusion_config
-from models.fusion.artifacts import EnsureArtifactsOptions, ensure_required_artifacts
-from models.fusion.hierarchical_optimizer import build_hierarchical_optimizer
 from models.fusion.losses import build_loss_weights
-from models.fusion.config import (
-    apply_optimizer_config,
-    apply_sample_latent_default,
-    normalize_optimizer_config,
-)
-from models.fusion.model import UMCLFiveViewModel
-from models.fusion.training import build_eval_loader, build_train_loader, run_training
-from models.fusion.view_mask import create_view_mask_from_config, get_mask_name
-from models.evaluation import build_test_loader_with_fallback, run_test_from_model
-from utils.jsonl import write_json
-from utils.torch_runtime import seed_everything
 
 
-def parse_args() -> argparse.Namespace:
+
+def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--dataset_id", required=True, help="Single dataset id, e.g. RumourEval")
+    parser.add_argument("--dataset_id", required=True, help="Single dataset id, e.g. PHEME")
     parser.add_argument("--data_root", default="data")
     parser.add_argument("--run_root", default="runs")
+    parser.add_argument(
+        "--pretrained_model",
+        "--pretrained_model_name",
+        dest="pretrained_model",
+        default=None,
+        help=(
+            "HuggingFace model id or local model path used by the content and stance encoders. "
+            "Default: use the configured model (currently xlm-roberta-base)."
+        ),
+    )
     parser.add_argument(
         "--seed",
         type=int,
@@ -94,93 +94,34 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--optimizer.scheduler.min_lr", dest="optimizer_scheduler_min_lr", type=float, default=None)
     parser.add_argument("--optimizer.scheduler.start_epoch", dest="optimizer_scheduler_start_epoch", type=int, default=None)
     parser.add_argument("--device", default="auto", choices=["auto", "cpu", "cuda"])
+    parser.add_argument("--cuda_index", type=int, default=0)
     parser.add_argument("--amp", default="auto", choices=["auto", "true", "false"])
     parser.add_argument(
         "--active_views",
         default=None,
         help="Comma-separated list of active views for selective training/testing (e.g. 'content,stance'). Default: use config value. Presets: content_only, stance_only, etc.",
     )
-    return parser.parse_args()
+    return parser
 
 
-def resolve_device(choice: str) -> torch.device:
-    if choice == "cpu":
-        return torch.device("cpu")
-    if choice == "cuda":
-        return torch.device("cuda")
-    return torch.device("cuda" if torch.cuda.is_available() else "cpu")
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+    return build_parser().parse_args(argv)
 
 
-def parse_split_arg(raw: str | None) -> list[str] | None:
-    if raw is None:
-        return None
-    values = [item.strip() for item in raw.split(",") if item.strip()]
-    return values or None
 
 
-def resolve_amp(choice: str, device: torch.device) -> bool:
-    if choice == "true":
-        return device.type == "cuda"
-    if choice == "false":
-        return False
-    return device.type == "cuda"
 
 
-def resolve_checkpoint_choice(choice: str) -> bool:
-    if choice == "true":
-        return True
-    if choice == "false":
-        return False
-    raise ValueError(f"Unsupported checkpoint choice: {choice}")
 
 
-def _resolve_optimizer_config(args: argparse.Namespace, config) -> dict[str, Any]:
-    optimizer_config = normalize_optimizer_config(config.optimizer)
-    overrides = {
-        ("backbone", "lr"): args.optimizer_backbone_lr,
-        ("backbone", "weight_decay"): args.optimizer_backbone_weight_decay,
-        ("top_layer", "lr"): args.optimizer_top_layer_lr,
-        ("top_layer", "weight_decay"): args.optimizer_top_layer_weight_decay,
-        ("head", "lr"): args.optimizer_head_lr,
-        ("head", "weight_decay"): args.optimizer_head_weight_decay,
-        ("scheduler", "patience"): args.optimizer_scheduler_patience,
-        ("scheduler", "factor"): args.optimizer_scheduler_factor,
-        ("scheduler", "min_lr"): args.optimizer_scheduler_min_lr,
-        ("scheduler", "start_epoch"): args.optimizer_scheduler_start_epoch,
-    }
-    for (group_name, field_name), override_value in overrides.items():
-        if override_value is not None:
-            optimizer_config[group_name][field_name] = override_value
-
-    missing_fields: list[str] = []
-    for group_name in ("backbone", "top_layer", "head"):
-        for field_name in ("lr", "weight_decay"):
-            if optimizer_config[group_name][field_name] is None:
-                missing_fields.append(f"optimizer.{group_name}.{field_name}")
-    for field_name in ("factor", "patience", "min_lr", "start_epoch"):
-        if optimizer_config["scheduler"][field_name] is None:
-            missing_fields.append(f"optimizer.scheduler.{field_name}")
-    if missing_fields:
-        raise ValueError(f"Missing optimizer config values: {missing_fields}")
-    return optimizer_config
 
 
-def _scheduler_params(optimizer_config: dict[str, Any]) -> dict[str, Any]:
-    scheduler_config = optimizer_config["scheduler"]
-    return {
-        "mode": "max",
-        "factor": float(scheduler_config["factor"]),
-        "patience": int(scheduler_config["patience"]),
-        "min_lr": float(scheduler_config["min_lr"]),
-    }
 
 
-def _now_iso() -> str:
-    return datetime.now().astimezone().isoformat(timespec="seconds")
 
 
-def _now_dirstamp() -> str:
-    return datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+
+
 
 
 def _sanitize_csv_column_name(raw_name: str) -> str:
@@ -242,9 +183,14 @@ def _build_core_hyperparameters(
 ) -> dict[str, Any]:
     return {
         "data_root": str(data_root),
+        "pretrained_models": copy.deepcopy(getattr(args, "resolved_pretrained_models", {})),
         "batch_size": args.batch_size,
         "max_epoch": args.max_epoch,
         "candidate_epochs": args.candidate_epochs,
+        "candidate_epoch_start": max(1, int(args.max_epoch) - int(args.candidate_epochs) + 1),
+        "candidate_epoch_end": int(args.max_epoch),
+        "best_selection_scope": "candidate_epochs",
+        "best_selection_rule": "raw_monitor_max_earliest_tie",
         "max_steps": args.max_steps,
         "optimizer": copy.deepcopy(optimizer_config),
         "view_reconstruction_loss_weight": float(config.view_reconstruction_loss_weight),
@@ -303,9 +249,14 @@ def _build_core_summary_hyperparameters(
     eval_splits: list[str] | None,
 ) -> dict[str, Any]:
     return {
+        "pretrained_models": copy.deepcopy(getattr(args, "resolved_pretrained_models", {})),
         "batch_size": args.batch_size,
         "max_epoch": args.max_epoch,
         "candidate_epochs": args.candidate_epochs,
+        "candidate_epoch_start": max(1, int(args.max_epoch) - int(args.candidate_epochs) + 1),
+        "candidate_epoch_end": int(args.max_epoch),
+        "best_selection_scope": "candidate_epochs",
+        "best_selection_rule": "raw_monitor_max_earliest_tie",
         "max_steps": args.max_steps,
         "optimizer": copy.deepcopy(optimizer_config),
         "view_reconstruction_loss_weight": float(config.view_reconstruction_loss_weight),
@@ -482,6 +433,11 @@ def _build_summary(
             "best_epoch": training_result["best_epoch"],
             "best_monitor_value": training_result["best_monitor_value"],
             "best_checkpoint": training_result["best_checkpoint"],
+            "selection_scope": training_result["selection_scope"],
+            "selection_rule": training_result["selection_rule"],
+            "candidate_epoch_start": training_result["candidate_epoch_start"],
+            "candidate_epoch_end": training_result["candidate_epoch_end"],
+            "best_selection_min_delta": training_result["best_selection_min_delta"],
             "cache_stats": training_result["cache_stats"],
         },
         "metrics": {

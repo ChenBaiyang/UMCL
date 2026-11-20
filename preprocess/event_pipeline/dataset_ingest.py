@@ -4,13 +4,9 @@ import shutil
 from pathlib import Path
 from typing import Any, Callable, Iterable
 
-from preprocess.canonical.converters import (
-    PhemeVeracityCanonicalConverter,
-    RumdectWeiboCanonicalConverter,
-    RumourEvalCanonicalConverter,
-    Twitter15CanonicalConverter,
-    Twitter16CanonicalConverter,
-)
+from config.types import DATASET_IDS
+
+from preprocess.canonical.converters import PhemeVeracityCanonicalConverter, RumdectWeiboCanonicalConverter, Twitter15CanonicalConverter, Twitter16CanonicalConverter
 from preprocess.event_pipeline.raw_archive import open_download_root
 
 
@@ -19,17 +15,11 @@ DEFAULT_DOWNLOAD_ROOT = PROJECT_ROOT / "data" / "downloads"
 
 
 def available_dataset_ids() -> list[str]:
-    return ["RumourEval", "PHEME", "Twitter15", "Twitter16", "Weibo"]
+    return list(DATASET_IDS)
 
 
 def _converter_specs(download_root: Path) -> dict[str, tuple[Path, Callable[[Path, Path], object]]]:
-    return {
-        "RumourEval": (download_root / "RumourEval", RumourEvalCanonicalConverter),
-        "PHEME": (download_root / "PHEME", PhemeVeracityCanonicalConverter),
-        "Twitter15": (download_root / "Twitter15", Twitter15CanonicalConverter),
-        "Twitter16": (download_root / "Twitter16", Twitter16CanonicalConverter),
-        "Weibo": (download_root / "Weibo", RumdectWeiboCanonicalConverter),
-    }
+    return {'PHEME': (download_root / 'PHEME', PhemeVeracityCanonicalConverter), 'Twitter15': (download_root / 'Twitter15', Twitter15CanonicalConverter), 'Twitter16': (download_root / 'Twitter16', Twitter16CanonicalConverter), 'Weibo': (download_root / 'Weibo', RumdectWeiboCanonicalConverter)}
 
 
 def _row_to_dict(row: Any) -> dict[str, Any]:

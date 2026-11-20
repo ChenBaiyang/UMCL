@@ -48,9 +48,6 @@
         "dataset_overrides": {
           "Weibo": {
             "max_length_value": 128
-          },
-          "RumourEval": {
-            "train_top_k_layers": 2
           }
         }
       },
@@ -107,9 +104,6 @@
           "Weibo": {
             "max_length_value": 128,
             "max_replies_per_event": 320
-          },
-          "RumourEval":{
-            "enable_reply_classifier_head": true
           }
         }
       },
@@ -143,9 +137,6 @@
           "parent_bias_relation_policy": "parent_source"
         },
         "dataset_overrides": {
-          "RumourEval": {
-            "max_nodes_per_event": 64
-          },
           "PHEME": {
             "max_nodes_per_event": 64
           }
@@ -242,11 +233,6 @@
         }
       },
       "dataset_overrides": {
-        "RumourEval": {
-          "batch_size": 16,
-          "max_epoch": 20,
-          "stance_auxiliary_loss_weight": 1
-        },
         "Weibo": {
           "max_epoch": 20
         },

@@ -42,33 +42,3 @@ def iter_preprocessed_events(path: Path) -> Iterator[dict[str, Any]]:
 
 def read_preprocessed_events(path: Path) -> list[dict[str, Any]]:
     return list(iter_preprocessed_events(path))
-
-
-def dump_preprocessed_events(path: Path, rows: Iterable[dict[str, Any]], *, dataset_id: str | None = None) -> dict[str, Any]:
-    events = list(rows)
-    payload = {
-        "schema_version": 1,
-        "dataset_id": dataset_id,
-        "events": events,
-    }
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with gzip.open(path, mode="wb") as handle:
-        pickle.dump(payload, handle, protocol=pickle.HIGHEST_PROTOCOL)
-    return {
-        "path": str(path),
-        "event_count": len(events),
-        "schema_version": 1,
-    }
-
-
-def load_preprocessed_payload(path: Path) -> dict[str, Any]:
-    dataset_id = path.parent.name if path.parent.name else None
-    if _is_jsonl_path(path):
-        return {"schema_version": 0, "dataset_id": dataset_id, "events": read_preprocessed_events(path)}
-    return {"schema_version": 1, "dataset_id": dataset_id, "events": read_preprocessed_events(path)}
-
-
-def write_preprocessed_payload(path: Path, payload: dict[str, Any]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with gzip.open(path, mode="wb") as handle:
-        pickle.dump(payload, handle, protocol=pickle.HIGHEST_PROTOCOL)
